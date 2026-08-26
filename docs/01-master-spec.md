@@ -641,6 +641,7 @@ Each Chef food listing can contain:
 
 - Food name
 - Cuisine
+- Kitchen binding
 - Category
 - Description
 - Multiple images
@@ -950,16 +951,20 @@ Platform promotions can target:
 
 Confirmed rules:
 
-1. A Chef promotion cannot stack with another Chef promotion.
-2. A Platform promotion can stack with a Chef promotion.
-3. A customer may use only one promo code per transaction.
-4. A promo code is single-use.
-5. A promotion can target multiple food items.
-6. A promotion can target an entire Chef menu.
-7. An Entrepreneur promotion may apply to equipment rental.
-8. Platform promo codes may be restricted to specific users/segments.
-9. An expired promotion is invalid at checkout even if an item was previously added to the cart.
-10. After a partial refund, promotion eligibility must be recalculated.
+1. Chef promotions are evaluated independently within each ChefOrderGroup.
+2. Item-level promotions may coexist when they affect different eligible items or non-overlapping scopes.
+3. Group-level promotions only conflict when they target the same qualifying basis or exclusive scope.
+4. Platform promotions can stack with Chef promotions when the scopes are compatible.
+5. A customer may use only one promo code per transaction.
+6. A promo code is single-use.
+7. A promotion can target multiple food items.
+8. A promotion can target an entire Chef menu.
+9. An Entrepreneur promotion may apply to equipment rental.
+10. Platform promo codes may be restricted to specific users/segments.
+11. An expired promotion is invalid at checkout even if an item was previously added to the cart.
+12. After a partial refund, promotion eligibility must be recalculated from the original snapshot.
+
+Promotion conflict resolution is not controlled by a single global `stackable` flag.
 
 The exact stacking rules involving Entrepreneur + Platform promotions remain an ADR/business decision unless explicitly finalized.
 
@@ -968,6 +973,8 @@ The exact stacking rules involving Entrepreneur + Platform promotions remain an 
 # 22. Chef Promotion Scope — Critical Rule
 
 Chef-level promotions must be evaluated **only against that Chef's portion of the Kitchen Order**.
+
+Chef A and Chef B are independent promotion domains. Chef A items must never be used to qualify Chef B promotions, and vice versa.
 
 Example:
 
@@ -1006,6 +1013,8 @@ Chef C discount    $0
 
 The promotion engine must never use total Kitchen Order quantity to satisfy a Chef promotion.
 
+Group-level Chef promotions must declare an explicit qualifying basis such as `ALL_ELIGIBLE_ITEMS`, `NON_DISCOUNTED_ELIGIBLE_ITEMS`, `SPECIFIC_TARGET_ITEMS`, `GROUP_SUBTOTAL`, or `DELIVERY_FEE`.
+
 ---
 
 # 23. Promotion Evaluation Model
@@ -1015,10 +1024,14 @@ A Promotion should be evaluated using at least:
 ```text
 Owner
 Scope
+Target
 Eligibility Rules
-Target Items
+Qualifying Basis
+Compatible Promotions
+Exclusive Group
 Conditions
 Priority
+Selection Tie-Breaker
 Validity Window
 Usage Limit
 Customer Limit
@@ -1051,13 +1064,15 @@ The backend is authoritative.
 Cart
  ↓
 Promotion Engine
- ├── Validate date/time
- ├── Validate customer eligibility
- ├── Validate item scope
- ├── Validate quantity
- ├── Validate usage
- ├── Validate stacking
- └── Calculate discount
+ ├── Partition order into ChefOrderGroups
+ ├── Evaluate item-level promotions per eligible item
+ ├── Mark discounted items
+ ├── Calculate qualifying subtotal by configured basis
+ ├── Evaluate ChefOrderGroup promotions
+ ├── Resolve conflicts deterministically
+ ├── Evaluate delivery promotions
+ ├── Evaluate platform promotions
+ └── Persist immutable PromotionSnapshot
  ↓
 Pricing Result
 ```
@@ -1090,6 +1105,7 @@ Promotion no longer valid.
 The financial engine must calculate the correct refund/adjustment and preserve an audit trail.
 
 Historical financial records must remain immutable.
+The original PromotionSnapshot must remain available as evidence for the refund recalculation.
 
 ---
 
@@ -1267,7 +1283,7 @@ A single Order can have:
 
 A single Kitchen Order may contain items from multiple Chefs, so the payment system must support one customer payment with allocation to multiple sellers/connected accounts.
 
-The recommended payment technology is **Stripe Connect**, subject to final legal/merchant-of-record validation. Stripe documents Connect specifically for marketplaces that collect customer payments and pay multiple sellers/service providers, including application fees and payouts. citeturn201369search0turn201369search1
+The operational/payment architecture is centralized marketplace checkout with automated allocation and provider-managed payouts. The final legal Merchant-of-Record decision remains subject to legal/accounting validation. Stripe Connect is a likely provider baseline, not a finalized legal posture. Stripe documents Connect specifically for marketplaces that collect customer payments and pay multiple sellers/service providers, including application fees and payouts. citeturn201369search0turn201369search1
 
 ## 33.3 Payment Lifecycle
 
@@ -1293,7 +1309,7 @@ Repeated user clicks, network retries, and repeated webhooks must not result in 
 
 Recommended baseline:
 
-**Stripe Connect** for marketplace payments/payout orchestration.
+Provider abstraction for marketplace payments/payout orchestration.
 
 The platform should use a provider abstraction so it can evolve later.
 
@@ -1305,7 +1321,7 @@ PaymentGateway
 
 Do not store raw card numbers or CVV data in Cheffy Bites systems.
 
-Stripe Connect supports connected-account onboarding, payment routing, payouts, platform fees, refunds, and other marketplace workflows. citeturn201369search0turn201369search1
+Stripe Connect can automate connected-account onboarding, payment routing, payouts, platform fees, refunds, and other marketplace workflows, but Cheffy Bites still owns allocation rules, refund redistribution, ledger truth, and reconciliation.
 
 ---
 
@@ -1357,7 +1373,9 @@ Kitchen Order
 
 Chef payouts must be derived from immutable transaction line items.
 
-Stripe Connect supports marketplace payment flows and payouts to connected accounts; final charge/transfer configuration must be selected during payment architecture ADR review. citeturn201369search0turn201369search3
+Chef payouts must be derived from immutable payment allocation and ledger entries tied back to the originating ChefOrderGroup.
+
+Delivery settlement and platform fees are separate allocation lines, not ad hoc calculations.
 
 ---
 
@@ -1409,7 +1427,7 @@ ON_HOLD
 
 for disputes, verification, fraud review, or account problems.
 
-Stripe Connect supports scheduled or manual payouts and payout status webhooks; exact payout schedule is a business decision. citeturn201369search4
+The payout schedule is a business decision. The provider may execute the payout, but Cheffy Bites owns eligibility, allocation, and reconciliation.
 
 ---
 
@@ -1573,6 +1591,10 @@ Payout
 PayoutLineItem
 LedgerEntry
 FinancialAdjustment
+PaymentAllocation
+RefundLine
+PromotionSnapshot
+FinancialSnapshot
 ```
 
 The final database design may use fewer/more physical tables, but the business concepts must be preserved.
@@ -1589,6 +1611,7 @@ Product price
 Quantity
 Chef promotion
 Platform promotion
+Promotion snapshot reference
 Fees
 Delivery
 Taxes
@@ -3840,20 +3863,23 @@ The Cheffy Bites architecture must follow these principles:
 1. **One order belongs to one physical Kitchen.**
 2. **One order may contain multiple Chefs from that Kitchen.**
 3. **Chef promotions apply only within the Chef's eligible scope.**
-4. **Platform promotions may stack with Chef promotions.**
-5. **Chef promotions cannot stack with each other.**
-6. **Only one promo code is allowed per transaction.**
-7. **Promo codes are single-use.**
-8. **Promotion eligibility is authoritative on the backend.**
-9. **Payments, refunds, fees, taxes, and payouts are separate financial concepts.**
-10. **Financial history is immutable/auditable.**
-11. **Booking/resource availability must be concurrency-safe.**
-12. **Delivery is associated with the Kitchen Order, not with each Chef.**
-13. **Chef fulfillment status is independently tracked.**
-14. **Master catalog data is separated from user-owned data.**
-15. **Geospatial functionality is a core capability.**
-16. **Food Requests are distinct from ordinary saved-food wishlists.**
-17. **Event-driven processing is used selectively.**
+4. **Chef A and Chef B are independent promotion domains; their promotions may coexist.**
+5. **Promotion compatibility is resolved by scope, compatibility, exclusivity, priority, savings, and a deterministic tie-breaker. There is no blanket global `stackable` flag.**
+6. **Platform promotions may stack with Chef promotions according to the resolved compatibility model.**
+7. **Only one promo code is allowed per transaction.**
+8. **Promo codes are single-use.**
+9. **Promotion evaluation is authoritative on the backend and is performed per ChefOrderGroup.**
+10. **Payments, refunds, fees, taxes, and payouts are separate financial concepts.**
+11. **Financial history is immutable/auditable (append-only ledger, snapshot-preserved promotion and financial history).**
+12. **Booking/resource availability must be concurrency-safe (PostgreSQL `tstzrange` + GiST `EXCLUDE`; no advisory locks by default).**
+13. **Delivery is associated with the Kitchen Order, not with each Chef.**
+14. **Chef fulfillment status is independently tracked through ChefOrderGroup.**
+15. **Master catalog data is separated from user-owned data.**
+16. **Geospatial functionality is a core capability.**
+17. **Food Requests are distinct from ordinary saved-food wishlists.**
+18. **Event-driven processing is used selectively, with versioned event envelopes and provider-event deduplication for inbound webhooks.**
+19. **The Merchant-of-Record decision remains explicitly unresolved pending legal/accounting review.**
+20. **The payment architecture is provider-neutral; Stripe Connect may be described as a candidate provider.**
 18. **The modular monolith is preferred until extraction is justified.**
 19. **Security and authorization are enforced server-side.**
 20. **AI must follow the approved architecture instead of inventing its own.**

@@ -25,7 +25,7 @@ The most important transactional invariant is:
 
 Therefore a customer can buy from multiple Chefs in one Kitchen Order, receives one delivery for that Kitchen Order, and pays one delivery fee for that delivery.
 
-Chef promotions are evaluated only against the relevant Chef Order Group. A Chef promotion must never use another Chef's quantity to satisfy a condition.
+Chef promotions are evaluated independently within the relevant Chef Order Group. A Chef promotion must never use another Chef's quantity to satisfy a condition, and group-level promotions must declare an explicit qualifying basis such as `ALL_ELIGIBLE_ITEMS` or `NON_DISCOUNTED_ELIGIBLE_ITEMS`.
 
 ---
 
@@ -50,7 +50,7 @@ Chef promotions are evaluated only against the relevant Chef Order Group. A Chef
 | Async messaging | SQS + EventBridge/SNS as needed | Adopt |
 | Outbox | PostgreSQL transactional outbox | Adopt |
 | Identity | Auth0 / OIDC | Adopt, subject to production tenant configuration |
-| Payments | Stripe Connect | Adopt, subject to legal/MoR configuration |
+| Payments | Provider-neutral marketplace settlement with Stripe Connect as likely initial provider | Adopt, legal/MoR decision pending |
 | Tax | Stripe Tax evaluation + validated tax configuration | Adopt baseline |
 | Delivery | Provider adapter abstraction; first provider configured separately | Adopt |
 | Runtime | Docker + AWS ECS Fargate | Adopt |
@@ -854,20 +854,26 @@ erDiagram
     ORDERS ||--o{ PROMOTION_APPLICATIONS : receives
     CHEF_ORDER_GROUPS ||--o{ PROMOTION_APPLICATIONS : scopes
     PROMOTIONS ||--o{ PROMOTION_APPLICATIONS : applied
+    PROMOTIONS ||--o{ PROMOTION_SNAPSHOTS : snapshots
+    PROMOTION_SNAPSHOTS ||--o{ PROMOTION_APPLICATION_ITEMS : allocates
 
     ORDERS ||--o{ PRICING_SNAPSHOTS : priced
+    ORDERS ||--o{ FINANCIAL_SNAPSHOTS : captures
+    CHEF_ORDER_GROUPS ||--o{ FINANCIAL_SNAPSHOTS : captures
     ORDERS ||--o{ PAYMENTS : paid_by
     PAYMENTS ||--o{ PAYMENT_ATTEMPTS : attempts
     PAYMENTS ||--o{ PAYMENT_TRANSACTIONS : transactions
+    PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
     ORDERS ||--o{ REFUNDS : refunded
     REFUNDS ||--o{ REFUND_TRANSACTIONS : transactions
+    REFUNDS ||--o{ REFUND_LINES : lines
 
     ORDERS ||--o{ FEE_LINE_ITEMS : charged
     ORDERS ||--o{ TAX_LINE_ITEMS : taxed
     ORDERS ||--o{ LEDGER_ENTRIES : recorded
 
-    PAYOUTS ||--o{ PAYOUT_LINE_ITEMS : contains
-    PAYOUT_LINE_ITEMS ||--o{ LEDGER_ENTRIES : settles
+    PAYOUTS ||--o{ PAYOUT_LINES : contains
+    PAYOUT_LINES ||--o{ LEDGER_ENTRIES : settles
 
     ORDERS ||--o| DELIVERIES : may_have
     DELIVERIES ||--o{ DELIVERY_EVENTS : emits
@@ -997,6 +1003,7 @@ erDiagram
         timestamptz start_at
         timestamptz cooking_end_at
         timestamptz occupancy_end_at
+        timestamptz hold_expires_at
         string timezone
         string status
         string cancellation_reason
@@ -1039,6 +1046,7 @@ erDiagram
     FOOD_LISTINGS {
         uuid id PK
         uuid chef_business_id FK
+        uuid kitchen_id FK
         uuid master_food_id FK
         string name
         text description
@@ -1090,6 +1098,7 @@ erDiagram
     CART_ITEMS {
         uuid id PK
         uuid cart_id FK
+        uuid kitchen_id FK
         uuid food_listing_id FK
         int quantity
         jsonb selected_options
@@ -1125,10 +1134,14 @@ erDiagram
         bigint net_minor
         string currency_code
         int version
+        uuid latest_financial_snapshot_id FK
+        uuid latest_promotion_snapshot_id FK
     }
 
     ORDER_ITEMS {
         uuid id PK
+        uuid order_id FK
+        uuid kitchen_id FK
         uuid chef_order_group_id FK
         uuid food_listing_id FK
         string product_name_snapshot
@@ -1146,14 +1159,60 @@ erDiagram
         uuid id PK
         string owner_type
         uuid owner_id
+        string promotion_scope
         string promotion_type
         string name
         timestamptz valid_from
         timestamptz valid_to
         int priority
-        bool stackable
+        string qualifying_basis
+        string compatibility_group
+        string exclusivity_group
         string status
         jsonb conditions
+    }
+
+    PROMOTION_RULES {
+        uuid id PK
+        uuid promotion_id FK
+        string rule_type
+        string scope
+        string qualifying_basis
+        int priority
+        jsonb parameters
+        string status
+    }
+
+    PROMOTION_TARGETS {
+        uuid id PK
+        uuid promotion_id FK
+        string target_type
+        uuid target_id
+        string status
+    }
+
+    PROMOTION_SNAPSHOTS {
+        uuid id PK
+        uuid promotion_id FK
+        uuid order_id FK
+        uuid chef_order_group_id FK
+        int promotion_version
+        string scope
+        string qualifying_basis
+        bigint qualifying_subtotal_minor
+        bigint discount_minor
+        string applied_status
+        string rejection_reason
+        jsonb snapshot_evidence
+        timestamptz created_at
+    }
+
+    PROMOTION_APPLICATION_ITEMS {
+        uuid id PK
+        uuid promotion_snapshot_id FK
+        uuid order_item_id FK
+        string allocation_type
+        bigint discount_minor
     }
 
     PROMO_CODES {
@@ -1183,19 +1242,57 @@ erDiagram
         uuid order_id FK
         string provider
         string provider_payment_intent_id UK
+        string idempotency_key
         string status
         bigint amount_minor
         string currency_code
+        jsonb provider_metadata
+    }
+
+    PAYMENT_ATTEMPTS {
+        uuid id PK
+        uuid payment_id FK
+        string provider_attempt_id
+        string status
+        bigint amount_minor
+        string currency_code
+        jsonb provider_payload
+        timestamptz attempted_at
+    }
+
+    PAYMENT_ALLOCATIONS {
+        uuid id PK
+        uuid payment_id FK
+        uuid order_id FK
+        uuid chef_order_group_id FK
+        string allocation_type
+        bigint amount_minor
+        string currency_code
+        jsonb allocation_evidence
     }
 
     REFUNDS {
         uuid id PK
+        uuid payment_id FK
         uuid order_id FK
+        string idempotency_key
         string reason
         string status
         bigint requested_minor
         bigint approved_minor
         string currency_code
+        jsonb provider_metadata
+    }
+
+    REFUND_LINES {
+        uuid id PK
+        uuid refund_id FK
+        uuid order_item_id FK NULL
+        uuid chef_order_group_id FK NULL
+        string line_type
+        bigint amount_minor
+        string currency_code
+        jsonb refund_evidence
     }
 
     FEE_LINE_ITEMS {
@@ -1221,18 +1318,20 @@ erDiagram
         uuid id PK
         string recipient_type
         uuid recipient_id
+        string idempotency_key
         string status
         bigint amount_minor
         string currency_code
         string provider_reference
+        jsonb provider_metadata
         timestamptz created_at
     }
 
-    PAYOUT_LINE_ITEMS {
+    PAYOUT_LINES {
         uuid id PK
         uuid payout_id FK
         uuid order_id FK
-        uuid chef_order_group_id FK NULL
+        uuid chef_order_group_id FK
         uuid kitchen_booking_id FK NULL
         string line_type
         bigint gross_minor
@@ -1248,11 +1347,15 @@ erDiagram
         uuid order_id FK NULL
         uuid chef_order_group_id FK NULL
         uuid payout_id FK NULL
-        uuid payout_line_item_id FK NULL
+        uuid payout_line_id FK NULL
+        uuid payment_id FK NULL
+        uuid refund_id FK NULL
         string entry_type
+        string entry_scope
         bigint amount_minor
         string currency_code
         string direction
+        jsonb entry_snapshot
         timestamptz created_at
     }
 
@@ -1285,6 +1388,50 @@ erDiagram
         geography location
         string status
         bool notify_when_available
+        timestamptz created_at
+    }
+
+    FINANCIAL_SNAPSHOTS {
+        uuid id PK
+        uuid order_id FK
+        uuid chef_order_group_id FK NULL
+        int snapshot_version
+        string snapshot_type
+        jsonb snapshot_evidence
+        timestamptz created_at
+    }
+
+    IDEMPOTENCY_KEYS {
+        uuid id PK
+        string operation_type
+        string idempotency_key UK
+        uuid actor_user_id FK
+        string request_hash
+        jsonb response_snapshot
+        string status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    PROVIDER_EVENTS {
+        uuid id PK
+        string provider_name
+        string provider_event_id
+        string aggregate_type
+        uuid aggregate_id
+        jsonb payload
+        timestamptz received_at
+        timestamptz processed_at
+        string status
+    }
+
+    BOOKING_HOLDS {
+        uuid id PK
+        uuid kitchen_space_id FK
+        uuid chef_profile_id FK
+        timestamptz hold_expires_at
+        string status
+        jsonb hold_evidence
         timestamptz created_at
     }
 ```
@@ -1441,13 +1588,15 @@ Pricing must be centralized and deterministic.
 ```text
 Base Item Prices
       ↓
-Chef-Level Promotion Evaluation
+Partition by ChefOrderGroup
       ↓
-Chef Group Net Amounts
+Item-Level Promotion Evaluation
+      ↓
+ChefOrderGroup Promotion Evaluation
+      ↓
+Delivery Promotion Evaluation
       ↓
 Platform Promotion Evaluation
-      ↓
-Delivery Fee
       ↓
 Service / Platform Fees
       ↓
@@ -1460,39 +1609,50 @@ Final Customer Total
 
 Chef promotions operate within a Chef Order Group.
 
-If Chef A has `20% off 2+ items`, only Chef A items count toward the threshold.
+Chef A promotions never use Chef B items, and Chef B promotions never use Chef A items.
 
-## 16.2 Chef Promotion Stacking
+## 16.2 Promotion Qualifying Basis
 
-No two Chef promotions may stack.
+Group-level promotions must explicitly declare a qualifying basis:
 
-The engine selects the winning eligible Chef promotion according to priority and deterministic tie-breaking.
+- `ALL_ELIGIBLE_ITEMS`
+- `NON_DISCOUNTED_ELIGIBLE_ITEMS`
+- `SPECIFIC_TARGET_ITEMS`
+- `GROUP_SUBTOTAL`
+- `DELIVERY_FEE`
 
-Recommended deterministic rule:
+If a promotion uses `NON_DISCOUNTED_ELIGIBLE_ITEMS`, discounted item values are excluded from the qualifying subtotal before threshold evaluation.
 
-1. Explicit promotion priority.
-2. Highest customer savings.
-3. Earliest promotion creation time.
-4. Promotion ID as final tie-breaker.
+## 16.3 Promotion Compatibility and Conflict Resolution
 
-## 16.3 Platform Promotion
+No blanket global `stackable` flag controls promotion resolution.
 
-A platform promotion may stack with the selected Chef promotion.
+Conflicting promotions must be resolved deterministically using:
 
-Default calculation order:
+1. scope
+2. compatibility
+3. exclusivity
+4. priority
+5. savings
+6. stable tie-breaker
 
-```text
-Chef promotion first
-→ Platform promotion second
-```
+Item-level promotions may coexist with group-level promotions when they target different eligible amounts or non-overlapping scopes.
 
-This must be represented explicitly in the pricing snapshot.
+## 16.4 Platform and Delivery Promotions
 
-## 16.4 One Promo Code
+Platform promotions and delivery promotions are evaluated separately from Chef promotions.
+
+Platform promotions may stack with Chef promotions when the scopes and compatibility rules allow it.
+
+## 16.5 One Promo Code
 
 Only one promo code can be attached to an order transaction.
 
-A Chef promotion that does not require a promo code may still apply based on eligibility. A platform promo code may then be evaluated according to stacking rules.
+A Chef promotion that does not require a promo code may still apply based on eligibility. A platform promo code may then be evaluated according to the explicit compatibility model.
+
+## 16.6 Pricing Snapshot
+
+The pricing result must preserve promotion applications, rejected promotions, qualifying basis, eligible/excluded item IDs, discount amounts, and snapshot references.
 
 ---
 
@@ -1508,7 +1668,18 @@ A Chef promotion that does not require a promo code may still apply based on eli
       "subtotalMinor": 5000,
       "discountMinor": 1000,
       "netMinor": 4000,
-      "appliedPromotions": ["uuid"]
+      "appliedPromotions": [
+        {
+          "promotionId": "uuid",
+          "promotionVersion": 3,
+          "scope": "ITEM",
+          "qualifyingBasis": "NON_DISCOUNTED_ELIGIBLE_ITEMS",
+          "eligibleItemIds": ["uuid"],
+          "excludedItemIds": ["uuid"],
+          "discountMinor": 1000,
+          "applied": true
+        }
+      ]
     }
   ],
   "platformDiscountMinor": 500,
@@ -1521,7 +1692,8 @@ A Chef promotion that does not require a promo code may still apply based on eli
     "rejected": [
       {
         "promotionId": "uuid",
-        "reasonCode": "NOT_ELIGIBLE"
+        "reasonCode": "NOT_ELIGIBLE",
+        "qualifyingBasis": "GROUP_SUBTOTAL"
       }
     ]
   }
@@ -1640,7 +1812,7 @@ sequenceDiagram
     participant C as Customer
     participant API as Cheffy Bites API
     participant P as Pricing
-    participant S as Stripe Connect
+    participant S as Payment Provider
     participant L as Ledger
     participant H as Chef
     participant E as Entrepreneur
@@ -1664,7 +1836,9 @@ The authoritative operational-to-financial relationship is: **Order → ChefOrde
 
 A Chef payout must be traceable to the exact Chef Order Groups that generated the payable amount. A payout may contain multiple payout line items from multiple completed orders, but each Chef Order Group allocation must remain separately identifiable for reporting, refunds, reconciliation, and dispute handling.
 
-Exact Stripe Connect charge/transfer configuration must match the merchant-of-record and tax/legal model.
+The operational payment architecture is one customer payment, internal allocation, and provider-managed payouts. The legal Merchant-of-Record, tax remittance, chargeback, and refund liability decisions remain unresolved and must be finalized before production.
+
+Stripe Connect is a likely provider baseline, but the architecture remains provider-neutral until legal/accounting sign-off.
 
 ---
 
@@ -1725,6 +1899,8 @@ Every Chef Order Group identifies exactly one Chef's portion of one customer Ord
 - Chef reporting and analytics.
 
 A Chef order-history query should resolve through `ChefOrderGroup`, not by scanning all Orders for a nullable Chef identifier.
+
+`ChefOrderGroup` must support immutable promotion snapshots, financial snapshots, payment allocations, refund allocations, payout lines, and ledger entries. A `latest_snapshot_id` may exist only as a convenience pointer and must never be treated as the source of truth.
 
 Conceptually:
 
@@ -1815,6 +1991,7 @@ Rules:
 3. Historical pricing snapshots are immutable.
 4. Every payout can be reconciled to ledger entries.
 5. Every refund references the underlying financial allocation.
+6. Payment allocations, refund allocations, payout lines, and promotion snapshots remain separately identifiable even when represented in the same ledger stream.
 
 ---
 
@@ -2586,12 +2763,12 @@ Recommended envelope:
 {
   "eventId": "uuid",
   "eventType": "OrderAccepted.v1",
+  "eventVersion": 1,
   "occurredAt": "2026-09-01T12:00:00Z",
   "aggregateType": "ORDER",
   "aggregateId": "uuid",
   "correlationId": "uuid",
   "causationId": "uuid",
-  "schemaVersion": 1,
   "payload": {}
 }
 ```
@@ -3096,13 +3273,13 @@ Never log:
 
 ## ADR-009 — Stripe Connect for Marketplace Payments
 
-**Status:** Accepted with legal configuration gate
+**Status:** Proposed / architecture baseline
 
-**Decision:** Use Stripe Connect as the initial marketplace payment/payout provider.
+**Decision:** Use a centralized marketplace checkout with automated allocation and provider-managed payouts as the operational payment architecture. Stripe Connect is a likely initial provider, but the legal Merchant-of-Record, tax, chargeback, refund, and reserve decisions remain unresolved.
 
-**Why:** One Kitchen Order may allocate money to several Chefs, while Kitchen Bookings pay Entrepreneurs. Connect is built for marketplace-style connected accounts and payouts.
+**Why:** One Kitchen Order may allocate money to several Chefs, while Kitchen Bookings pay Entrepreneurs. The architecture must support one customer payment, internal allocation, and automated settlement without hard-coding the final legal posture.
 
-**Gate:** Merchant-of-record, connected-account, tax and payout configuration must be validated legally/accounting-wise before production activation.
+**Gate:** Merchant-of-record, connected-account, tax, payout, reserve, and country-specific configuration must be validated legally/accounting-wise before production activation.
 
 ---
 
@@ -3122,7 +3299,7 @@ Never log:
 
 **Status:** Accepted
 
-**Decision:** Chef promotions evaluate only the Chef's eligible Order Group items.
+**Decision:** Chef promotions evaluate only the Chef's eligible Order Group items, and Chef A / Chef B are independent promotion domains.
 
 **Why:** Prevents Chef A's promotion from being triggered by Chef B's items.
 
@@ -3134,11 +3311,11 @@ Never log:
 
 **Status:** Accepted
 
-**Decision:** Treat `ChefOrderGroup` as a first-class operational, reporting, and financial entity.
+**Decision:** Treat `ChefOrderGroup` as a first-class operational, reporting, and financial entity with immutable promotion/financial history and optional convenience pointers to the latest snapshot records.
 
 **Why:** A single customer Order can contain multiple Chefs from one Kitchen. Each Chef needs independent fulfillment state, promotion scope, order history, revenue, refunds, and payouts.
 
-**Consequence:** `OrderItem` belongs to `ChefOrderGroup`; Chef payout allocations reference `ChefOrderGroup`; Chef order history queries start from `ChefOrderGroup`; and refunds/adjustments preserve Chef-level traceability.
+**Consequence:** `OrderItem` belongs to `ChefOrderGroup`; Chef payout allocations reference `ChefOrderGroup`; Chef order history queries start from `ChefOrderGroup`; and refunds/adjustments preserve Chef-level traceability without overwriting historical facts.
 
 ---
 
@@ -3146,23 +3323,24 @@ Never log:
 
 **Status:** Accepted
 
-**Decision:** Apply the winning Chef promotion first, then evaluate the applicable Platform promotion against the eligible post-Chef pricing base.
+**Decision:** Evaluate promotions by scope and qualifying basis: item-level promotions first, then ChefOrderGroup promotions, then delivery promotions, then platform promotions. Conflicts are resolved by compatibility, exclusivity, priority, savings, and deterministic tie-breaker. Item-level and group-level promotions may coexist when their scopes do not overlap.
 
 **Chef rules:**
 
-- No Chef-to-Chef stacking.
-- One selected Chef promotion per Chef Order Group unless future ADR changes this.
+- Chef A and Chef B promotion domains are independent.
+- ChefOrderGroup is the Chef promotion boundary.
+- Group-level Chef promotions must declare an explicit qualifying basis.
 
 **Platform:**
 
-- May stack with Chef promotion.
+- May stack with Chef promotion when compatibility rules allow it.
 
 **Promo code:**
 
 - Maximum one promo code per transaction.
 - Promo code is single-use.
 
-**Consequence:** Pricing snapshot must preserve both pre- and post-promotion values.
+**Consequence:** Pricing snapshot must preserve qualifying basis, eligible/excluded item IDs, selection evidence, and applied/rejected promotion outcomes.
 
 ---
 
@@ -3698,7 +3876,7 @@ Use the following prompt when giving this package to a coding AI:
 > 2. Multiple Chefs may contribute to one Order only when they operate from that Kitchen.
 > 3. One Kitchen Order has one standard delivery and delivery fee.
 > 4. Chef promotions operate only against that Chef's eligible items.
-> 5. Chef promotions cannot stack with another Chef promotion.
+> 5. Chef promotions are evaluated independently within each ChefOrderGroup and resolved through scope, compatibility, exclusivity, priority, savings, and a deterministic tie-breaker.
 > 6. Platform promotions may stack with Chef promotions according to the approved pricing sequence.
 > 7. Only one promo code may be used per transaction.
 > 8. Promo codes are single-use.

@@ -1,6 +1,11 @@
 # Cheffy Bites — API Contracts
 
-Source: `02-detailed-architecture.md` Sections 22–40.
+> **Source of Truth:** This document is **subsidiary** to [`02-detailed-architecture.md`](docs/02-detailed-architecture.md) Sections 22–40.
+> All API contract changes must be made in `02-detailed-architecture.md` first.
+> This document exists for convenient reference and will be regenerated from `02` during CI.
+> The authoritative machine-readable contract is the OpenAPI document generated from the backend.
+
+---
 
 # 22. API Contract Architecture
 
@@ -100,6 +105,8 @@ Response:
   ]
 }
 ```
+
+Booking creation and confirmation must be idempotent, and booking concurrency must rely on PostgreSQL range constraints rather than advisory locks.
 
 ## 25.2 Create Organization
 
@@ -408,13 +415,15 @@ GET /api/v1/carts/{cartId}
 
 # 32. Pricing / Promotion APIs
 
-## Price Cart
+## Checkout Quote
 
 ```http
-POST /api/v1/carts/{cartId}/price
+POST /api/v1/carts/{cartId}/checkout/quote
 ```
 
 Returns a non-authoritative pricing preview.
+
+The pricing response must expose promotion applications, rejected promotions, rejection reasons, qualifying basis, eligible/excluded item IDs, discount amounts, snapshot references, and allocation preview data.
 
 ## Validate Promo Code
 
@@ -437,11 +446,13 @@ POST /api/v1/promotions
 ```json
 {
   "ownerType": "CHEF",
+  "scope": "CHEF_ORDER_GROUP",
   "promotionType": "PERCENTAGE",
   "name": "20% off 2 or more items",
   "priority": 100,
   "validFrom": "2026-09-01T00:00:00Z",
   "validTo": "2026-09-30T23:59:59Z",
+  "qualifyingBasis": "NON_DISCOUNTED_ELIGIBLE_ITEMS",
   "conditions": {
     "minimumQuantity": 2
   },
@@ -453,7 +464,9 @@ POST /api/v1/promotions
   ],
   "discount": {
     "percent": 20
-  }
+  },
+  "compatibilityGroup": "GROUP_DEFAULT",
+  "exclusivityGroup": "GROUP_DEFAULT"
 }
 ```
 
@@ -501,7 +514,12 @@ Response:
       "status": "PENDING_ACCEPTANCE",
       "subtotalMinor": 5000,
       "discountMinor": 1000,
-      "netMinor": 4000
+      "netMinor": 4000,
+      "promotionSnapshotId": "uuid",
+      "financialSnapshotId": "uuid",
+      "paymentAllocationIds": ["uuid"],
+      "refundAllocationIds": [],
+      "payoutLineIds": ["uuid"]
     }
   ],
   "pricing": {
@@ -519,6 +537,41 @@ Response:
   }
 }
 ```
+
+## ChefOrderGroup List
+
+```http
+GET /api/v1/chef-order-groups?chefBusinessId=uuid&page=0&size=20
+```
+
+Returns paginated ChefOrderGroups for the authenticated Chef.
+
+## ChefOrderGroup Detail
+
+```http
+GET /api/v1/chef-order-groups/{chefOrderGroupId}
+```
+
+Returns the authenticated Chef's ChefOrderGroup details.
+
+## ChefOrderGroup Financials
+
+```http
+GET /api/v1/chef-order-groups/{chefOrderGroupId}/financials
+```
+
+Returns immutable promotion, payment, refund, payout, and ledger evidence for the ChefOrderGroup.
+
+## ChefOrderGroup Actions
+
+```http
+POST /api/v1/chef-order-groups/{chefOrderGroupId}/accept
+POST /api/v1/chef-order-groups/{chefOrderGroupId}/reject
+POST /api/v1/chef-order-groups/{chefOrderGroupId}/preparing
+POST /api/v1/chef-order-groups/{chefOrderGroupId}/ready
+```
+
+State transitions must be validated server-side and rejected with `409 Conflict` on invalid transitions.
 
 ## Get Order
 
@@ -563,6 +616,8 @@ POST /api/v1/orders/{orderId}/payments
 Idempotency-Key: payment-attempt-key
 ```
 
+Response must include provider payment identifiers, payment allocation references, and the authoritative payment status.
+
 ## Payment Provider Webhook
 
 ```http
@@ -570,6 +625,8 @@ POST /api/v1/webhooks/stripe
 ```
 
 This endpoint is unauthenticated at the normal user level but is protected by provider signature verification and replay protection.
+
+Webhook processing must be idempotent and deduplicated by provider event ID.
 
 Never trust the customer browser's redirect/success page as payment proof.
 
@@ -604,11 +661,15 @@ Response:
   "refundId": "uuid",
   "status": "REFUND_PENDING",
   "requestedAmountMinor": 2000,
-  "currency": "CAD"
+  "currency": "CAD",
+  "refundAllocationIds": ["uuid"],
+  "promotionAdjustmentIds": ["uuid"]
 }
 ```
 
 The financial engine re-evaluates promotion validity after the refund scope is known.
+
+Refund APIs must support item-scoped, ChefOrderGroup-scoped, and delivery-scoped refunds where the business workflow permits.
 
 ---
 
@@ -742,6 +803,7 @@ GET    /api/v1/admin/orders
 GET    /api/v1/admin/payments
 GET    /api/v1/admin/refunds
 GET    /api/v1/admin/payouts
+GET    /api/v1/admin/payouts/{payoutId}
 POST   /api/v1/admin/catalog/foods
 POST   /api/v1/admin/catalog/equipment
 POST   /api/v1/admin/promotions
@@ -759,4 +821,3 @@ admin:catalog:write
 ```
 
 ---
-

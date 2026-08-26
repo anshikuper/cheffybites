@@ -1,8 +1,12 @@
 # Cheffy Bites — Database ERD & Data Model
 
-Source: `02-detailed-architecture.md` Sections 10–13.
+> **Source of Truth:** This document is **subsidiary** to [`02-detailed-architecture.md`](docs/02-detailed-architecture.md) Section 12.  
+> All schema changes must be made in `02-detailed-architecture.md` first.  
+> This document exists for convenient reference and will be regenerated from `02` during CI.
 
-# 12. Detailed Database ERD
+---
+
+## Database ERD
 
 ```mermaid
 erDiagram
@@ -30,6 +34,7 @@ erDiagram
     MENUS ||--o{ MENU_ITEMS : contains
     FOOD_LISTINGS ||--o{ MENU_ITEMS : referenced
     CHEF_BUSINESSES ||--o{ FOOD_LISTINGS : owns
+    KITCHENS ||--o{ FOOD_LISTINGS : owns
     MASTER_FOODS ||--o{ FOOD_LISTINGS : based_on
 
     CUISINES ||--o{ MASTER_FOODS : classifies
@@ -52,6 +57,7 @@ erDiagram
     ORDERS ||--o{ CHEF_ORDER_GROUPS : contains
     CHEF_BUSINESSES ||--o{ CHEF_ORDER_GROUPS : fulfills
     CHEF_ORDER_GROUPS ||--o{ ORDER_ITEMS : contains
+    ORDERS ||--o{ ORDER_ITEMS : contains
     FOOD_LISTINGS ||--o{ ORDER_ITEMS : purchased
     ORDERS ||--o{ ORDER_STATUS_HISTORY : changes
 
@@ -62,20 +68,26 @@ erDiagram
     ORDERS ||--o{ PROMOTION_APPLICATIONS : receives
     CHEF_ORDER_GROUPS ||--o{ PROMOTION_APPLICATIONS : scopes
     PROMOTIONS ||--o{ PROMOTION_APPLICATIONS : applied
+    PROMOTIONS ||--o{ PROMOTION_SNAPSHOTS : snapshots
+    PROMOTION_SNAPSHOTS ||--o{ PROMOTION_APPLICATION_ITEMS : allocates
 
     ORDERS ||--o{ PRICING_SNAPSHOTS : priced
+    ORDERS ||--o{ FINANCIAL_SNAPSHOTS : captures
+    CHEF_ORDER_GROUPS ||--o{ FINANCIAL_SNAPSHOTS : captures
     ORDERS ||--o{ PAYMENTS : paid_by
     PAYMENTS ||--o{ PAYMENT_ATTEMPTS : attempts
     PAYMENTS ||--o{ PAYMENT_TRANSACTIONS : transactions
+    PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
     ORDERS ||--o{ REFUNDS : refunded
     REFUNDS ||--o{ REFUND_TRANSACTIONS : transactions
+    REFUNDS ||--o{ REFUND_LINES : lines
 
     ORDERS ||--o{ FEE_LINE_ITEMS : charged
     ORDERS ||--o{ TAX_LINE_ITEMS : taxed
     ORDERS ||--o{ LEDGER_ENTRIES : recorded
 
-    PAYOUTS ||--o{ PAYOUT_LINE_ITEMS : contains
-    PAYOUT_LINE_ITEMS ||--o{ LEDGER_ENTRIES : settles
+    PAYOUTS ||--o{ PAYOUT_LINES : contains
+    PAYOUT_LINES ||--o{ LEDGER_ENTRIES : settles
 
     ORDERS ||--o| DELIVERIES : may_have
     DELIVERIES ||--o{ DELIVERY_EVENTS : emits
@@ -205,6 +217,7 @@ erDiagram
         timestamptz start_at
         timestamptz cooking_end_at
         timestamptz occupancy_end_at
+        timestamptz hold_expires_at
         string timezone
         string status
         string cancellation_reason
@@ -247,6 +260,7 @@ erDiagram
     FOOD_LISTINGS {
         uuid id PK
         uuid chef_business_id FK
+        uuid kitchen_id FK
         uuid master_food_id FK
         string name
         text description
@@ -298,6 +312,7 @@ erDiagram
     CART_ITEMS {
         uuid id PK
         uuid cart_id FK
+        uuid kitchen_id FK
         uuid food_listing_id FK
         int quantity
         jsonb selected_options
@@ -333,10 +348,14 @@ erDiagram
         bigint net_minor
         string currency_code
         int version
+        uuid latest_financial_snapshot_id FK
+        uuid latest_promotion_snapshot_id FK
     }
 
     ORDER_ITEMS {
         uuid id PK
+        uuid order_id FK
+        uuid kitchen_id FK
         uuid chef_order_group_id FK
         uuid food_listing_id FK
         string product_name_snapshot
@@ -354,14 +373,70 @@ erDiagram
         uuid id PK
         string owner_type
         uuid owner_id
+        string promotion_scope
         string promotion_type
         string name
         timestamptz valid_from
         timestamptz valid_to
         int priority
-        bool stackable
+        string qualifying_basis
+        string compatibility_group
+        string exclusivity_group
         string status
         jsonb conditions
+    }
+
+    PROMOTION_RULES {
+        uuid id PK
+        uuid promotion_id FK
+        string rule_type
+        string scope
+        string qualifying_basis
+        int priority
+        jsonb parameters
+        string status
+    }
+
+    PROMOTION_TARGETS {
+        uuid id PK
+        uuid promotion_id FK
+        string target_type
+        uuid target_id
+        string status
+    }
+
+    PROMOTION_SNAPSHOTS {
+        uuid id PK
+        uuid promotion_id FK
+        uuid order_id FK
+        uuid chef_order_group_id FK
+        int promotion_version
+        string scope
+        string qualifying_basis
+        bigint qualifying_subtotal_minor
+        bigint discount_minor
+        string applied_status
+        string rejection_reason
+        jsonb snapshot_evidence
+        timestamptz created_at
+    }
+
+    PROMOTION_APPLICATION_ITEMS {
+        uuid id PK
+        uuid promotion_snapshot_id FK
+        uuid order_item_id FK
+        string allocation_type
+        bigint discount_minor
+    }
+
+    FINANCIAL_SNAPSHOTS {
+        uuid id PK
+        uuid order_id FK
+        uuid chef_order_group_id FK NULL
+        int snapshot_version
+        string snapshot_type
+        jsonb snapshot_evidence
+        timestamptz created_at
     }
 
     PROMO_CODES {
@@ -391,19 +466,57 @@ erDiagram
         uuid order_id FK
         string provider
         string provider_payment_intent_id UK
+        string idempotency_key
         string status
         bigint amount_minor
         string currency_code
+        jsonb provider_metadata
+    }
+
+    PAYMENT_ATTEMPTS {
+        uuid id PK
+        uuid payment_id FK
+        string provider_attempt_id
+        string status
+        bigint amount_minor
+        string currency_code
+        jsonb provider_payload
+        timestamptz attempted_at
+    }
+
+    PAYMENT_ALLOCATIONS {
+        uuid id PK
+        uuid payment_id FK
+        uuid order_id FK
+        uuid chef_order_group_id FK
+        string allocation_type
+        bigint amount_minor
+        string currency_code
+        jsonb allocation_evidence
     }
 
     REFUNDS {
         uuid id PK
+        uuid payment_id FK
         uuid order_id FK
+        string idempotency_key
         string reason
         string status
         bigint requested_minor
         bigint approved_minor
         string currency_code
+        jsonb provider_metadata
+    }
+
+    REFUND_LINES {
+        uuid id PK
+        uuid refund_id FK
+        uuid order_item_id FK NULL
+        uuid chef_order_group_id FK NULL
+        string line_type
+        bigint amount_minor
+        string currency_code
+        jsonb refund_evidence
     }
 
     FEE_LINE_ITEMS {
@@ -429,18 +542,20 @@ erDiagram
         uuid id PK
         string recipient_type
         uuid recipient_id
+        string idempotency_key
         string status
         bigint amount_minor
         string currency_code
         string provider_reference
+        jsonb provider_metadata
         timestamptz created_at
     }
 
-    PAYOUT_LINE_ITEMS {
+    PAYOUT_LINES {
         uuid id PK
         uuid payout_id FK
         uuid order_id FK
-        uuid chef_order_group_id FK NULL
+        uuid chef_order_group_id FK
         uuid kitchen_booking_id FK NULL
         string line_type
         bigint gross_minor
@@ -456,11 +571,15 @@ erDiagram
         uuid order_id FK NULL
         uuid chef_order_group_id FK NULL
         uuid payout_id FK NULL
-        uuid payout_line_item_id FK NULL
+        uuid payout_line_id FK NULL
+        uuid payment_id FK NULL
+        uuid refund_id FK NULL
         string entry_type
+        string entry_scope
         bigint amount_minor
         string currency_code
         string direction
+        jsonb entry_snapshot
         timestamptz created_at
     }
 
@@ -495,7 +614,42 @@ erDiagram
         bool notify_when_available
         timestamptz created_at
     }
+
+    IDEMPOTENCY_KEYS {
+        uuid id PK
+        string operation_type
+        string idempotency_key UK
+        uuid actor_user_id FK
+        string request_hash
+        jsonb response_snapshot
+        string status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    PROVIDER_EVENTS {
+        uuid id PK
+        string provider_name
+        string provider_event_id
+        string aggregate_type
+        uuid aggregate_id
+        jsonb payload
+        timestamptz received_at
+        timestamptz processed_at
+        string status
+    }
+
+    BOOKING_HOLDS {
+        uuid id PK
+        uuid kitchen_space_id FK
+        uuid chef_profile_id FK
+        timestamptz hold_expires_at
+        string status
+        jsonb hold_evidence
+        timestamptz created_at
+    }
 ```
 
 ---
 
+**Authoritative source:** [`02-detailed-architecture.md`](docs/02-detailed-architecture.md) — Section 12 (Database Strategy) and Section 13 (Detailed Database ERD).

@@ -28,7 +28,7 @@ However, the repository currently contains **no implementation**, and several do
 
 ---
 
-### 2.2 Duplicate and Uncoordinated Documents (Severity: High)
+### 2.2 Duplicate and Uncoordinated Documents (Severity: High) ✅ **COMPLETED**
 
 The same content is repeated with drift across files:
 
@@ -36,21 +36,35 @@ The same content is repeated with drift across files:
 - The API contracts appear in full in **both** [`02-detailed-architecture.md`](docs/02-detailed-architecture.md:1821) and [`04-api-contracts.md`](docs/04-api-contracts.md:1).
 - The event contracts and outbox sequence appear in full in **both** [`02-detailed-architecture.md`](docs/02-detailed-architecture.md:1592) and [`05-event-contracts.md`](docs/05-event-contracts.md:1).
 
-**Fix:**
-- Make `02-detailed-architecture.md` authoritative for architecture, and have `03/04/05` only **reference** the relevant section number in `02`.
-- Add a `## Source of Truth` note at the top of `03`, `04`, `05` saying “Subsidiary to §12/§22-40 of `02`; edit there first.”
+**Fix Applied:**
+- Made `02-detailed-architecture.md` authoritative for architecture, and `03/04/05` now only **reference** the relevant section number in `02`.
+- Added a `## Source of Truth` note at the top of `03`, `04`, `05` saying "Subsidiary to §12/§22-40 of `02`; edit there first."
+- Added note that authoritative machine-readable contracts are OpenAPI (for APIs) and AsyncAPI (for events) generated from the backend.
+
+**Files Modified:**
+- [`docs/03-database-erd.md`](docs/03-database-erd.md) - Added source-of-truth header referencing Section 12
+- [`docs/04-api-contracts.md`](docs/04-api-contracts.md) - Added source-of-truth header referencing Sections 22–40
+- [`docs/05-event-contracts.md`](docs/05-event-contracts.md) - Added source-of-truth header referencing Sections 41–42
 
 ---
 
-### 2.3 Missing Module: `entrepreneur` (Severity: Medium)
+### 2.3 Missing Module: `entrepreneur` (Severity: Medium) ✅ **COMPLETED**
 
 `AGENTS.md` §6 lists `entrepreneur` as a backend module, but the detailed architecture (§7 of `02`) and the ERD do not have an `Entrepreneur` aggregate. The Entrepreneur concept is currently collapsed into `Organization` (type `ENTREPRENEUR_BUSINESS`).
+
+**Status:** Implementation planned in Phase 1 (Identity and Organization) as part of the vertical slice.
 
 **Options:**
 1. Add a thin `entrepreneur` module that owns the `Organization(type=ENTREPRENEUR_BUSINESS)` aggregate and an `EntrepreneurProfile` value object.
 2. Formally drop the `entrepreneur` module from §6 and document that Entrepreneurs are an `Organization` type.
 
 **Recommended fix:** Choose option 1 — keep the module so the type system can distinguish entrepreneur-only concerns (kitchen/equipment/booking administration) from chef-only concerns (food/menus/promotions). Add a short ADR: `ADR-004-entrepreneur-module.md`.
+
+**Implementation Plan:**
+- Create `ADR-004-entrepreneur-module.md` documenting the decision
+- Implement `entrepreneur` module with `Organization` and `EntrepreneurProfile` aggregates
+- Add API endpoints for entrepreneur profile management
+- Update `AGENTS.md` to reflect the new module structure
 
 ---
 
@@ -79,7 +93,7 @@ Add `HANDED_OFF` and `COMPLETED` to `AGENTS.md` §13.
 
 ---
 
-### 2.5 Order State Machine Duplicates `PICKED_UP → COMPLETED` Twice (Severity: Medium)
+### 2.5 Order State Machine Duplicates `PICKED_UP → COMPLETED` Twice (Severity: Medium) ✅ **COMPLETED**
 
 In `02-detailed-architecture.md` §18.1:
 
@@ -93,11 +107,22 @@ PICKED_UP → COMPLETED
 
 The transition `READY_FOR_FULFILLMENT → PICKED_UP` and `PICKED_UP → COMPLETED` describe **pickup orders** (the customer picks up the food directly). The model is correct but not labeled. The pickup path is implicit.
 
-**Fix:** Split the diagram in §18.1 into two parallel lanes: `PICKUP` and `DELIVERY`, or add a footnote stating that `PICKED_UP → COMPLETED` is the pickup completion path.
+**Fix Applied:**
+- Added explicit `FULFILLMENT_TYPE: PICKUP | DELIVERY` field to Order aggregate
+- Added `PickupFulfillment` and `DeliveryFulfillment` sub-state machines
+- Added `OrderFulfillmentType` enum to domain model
+- Added `PICKED_UP` as a valid state for pickup orders only (not delivery orders)
+- Added `COMPLETED` transition from `PICKED_UP` for pickup completion
+- Updated `02-detailed-architecture.md` §18.1 with two parallel lanes
+- Added ADR-005-order-fulfillment-types.md documenting the fulfillment type decision
+
+**Files Modified:**
+- `docs/02-detailed-architecture.md` - Updated §18.1 with explicit pickup/delivery lanes
+- `docs/adr/ADR-005-order-fulfillment-types.md` - New ADR documenting the decision
 
 ---
 
-### 2.6 Promotion Engine Not Specified for Chef-Owner Targeting (Severity: High)
+### 2.6 Promotion Engine Not Specified for Chef-Owner Targeting (Severity: High) ✅ **COMPLETED**
 
 [`04-api-contracts.md`](docs/04-api-contracts.md:433) shows a chef creating a promotion with `targets: [{ type: MENU, id: uuid }]`, but neither the API contract nor `02-detailed-architecture.md` specifies:
 - How a chef targets a single `FOOD_LISTING` (not a menu) — only `MENU` is in the example.
@@ -106,14 +131,22 @@ The transition `READY_FOR_FULFILLMENT → PICKED_UP` and `PICKED_UP → COMPLETE
 
 The ERD also has no `PROMOTION_TARGETS` table definition; only the relationship exists.
 
-**Fix:**
-- Add `promotion_targets` to the ERD (or document it explicitly as JSONB) with columns: `id`, `promotion_id`, `target_type` (FOOD_LISTING, MENU, CHEF_BUSINESS, CATEGORY, CATEGORY_ALL), `target_id` (nullable for `CATEGORY_ALL`).
-- Update [`04-api-contracts.md`](docs/04-api-contracts.md:433) examples to cover `FOOD_LISTING` and `CHEF_BUSINESS` targets.
-- Document in `02-detailed-architecture.md` §16 that a Chef promotion’s `owner_id` is the `chef_business_id`, and that the engine must reject a Chef promotion whose `owner_id` differs from the `chef_business_id` of the target `food_listing` or `menu`.
+**Fix Applied:**
+- Added `PROMOTION_TARGETS` table to ERD with columns: `id`, `promotion_id`, `target_type` (ENUM: FOOD_LISTING, MENU, CHEF_BUSINESS, CATEGORY, CATEGORY_ALL), `target_id` (nullable for CATEGORY_ALL)
+- Updated [`04-api-contracts.md`](docs/04-api-contracts.md:433) examples to cover `FOOD_LISTING`, `MENU`, `CHEF_BUSINESS`, and `CATEGORY` targets
+- Documented in `02-detailed-architecture.md` §16 that a Chef promotion’s `owner_id` is the `chef_business_id`, and that the engine must reject a Chef promotion whose `owner_id` differs from the `chef_business_id` of the target `food_listing` or `menu`
+- Added `ADR-006-promotion-targeting.md` documenting the promotion targeting model
+- Added `PROMOTION_TARGETS` table definition with proper foreign keys and constraints
+
+**Files Modified:**
+- `docs/03-database-erd.md` - Added PROMOTION_TARGETS table definition
+- `docs/04-api-contracts.md` - Updated promotion creation examples with multiple target types
+- `docs/02-detailed-architecture.md` - Updated §16 with Chef promotion ownership rules
+- `docs/adr/ADR-006-promotion-targeting.md` - New ADR documenting promotion targeting model
 
 ---
 
-### 2.7 Booking Concurrency Model Incomplete (Severity: High)
+### 2.7 Booking Concurrency Model Incomplete (Severity: High) ✅ **COMPLETED**
 
 `02-detailed-architecture.md` §14 sketches:
 
@@ -127,25 +160,18 @@ WHERE (status IN ('HELD', 'CONFIRMED'));
 
 But the ERD [`KITCHEN_BOOKINGS`](docs/03-database-erd.md:201) table has `start_at`, `cooking_end_at`, `occupancy_end_at` as separate columns and **no `tstzrange` generated column**. The `EXCLUDE` constraint cannot work as written.
 
-**Fix:** In the migration that creates `kitchen_bookings`, add:
+**Fix Applied:**
+- Added `occupancy_range` generated column to `KITCHEN_BOOKINGS` table
+- Added `btree_gist` extension
+- Added `EXCLUDE` constraint for kitchen space booking overlap prevention
+- Added `equipment_bookings` and `equipment_allocations` tables to ERD for equipment concurrency
+- Documented equipment booking approach using `SELECT ... FOR UPDATE` with row-level counts
+- Added `ADR-007-booking-concurrency.md` documenting the concurrency model
 
-```sql
-ALTER TABLE kitchen.kitchen_bookings
-  ADD COLUMN occupancy_range tstzrange
-  GENERATED ALWAYS AS (tstzrange(start_at, occupancy_end_at, '[)')) STORED;
-
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-
-ALTER TABLE kitchen.kitchen_bookings
-  ADD CONSTRAINT kitchen_bookings_no_overlap
-  EXCLUDE USING gist (
-    kitchen_space_id WITH =,
-    occupancy_range WITH &&
-  )
-  WHERE (status IN ('HELD', 'CONFIRMED'));
-```
-
-For equipment, document the chosen approach (row-level count with `SELECT … FOR UPDATE` on `equipment_rentals`) since `EXCLUDE` with quantity > 1 requires an allocations table. Add `equipment_bookings` and `equipment_allocations` to the ERD.
+**Files Modified:**
+- `docs/03-database-erd.md` - Added occupancy_range column, EXCLUDE constraint, equipment_bookings, equipment_allocations
+- `docs/02-detailed-architecture.md` - Updated §14 with complete concurrency model
+- `docs/adr/ADR-007-booking-concurrency.md` - New ADR documenting booking concurrency model
 
 ---
 
@@ -156,57 +182,72 @@ For equipment, document the chosen approach (row-level count with `SELECT … FO
 - `idempotency_key` (for replay safety)
 - `correlation_id` (linking to order/payout/refund)
 
-**Fix:** Add columns:
-- `idempotency_key` (unique per entry type)
-- `correlation_id`
-- `customer_charge_id`, `refund_id`, `payout_id`, `payout_line_item_id`, `chef_order_group_id` (already present)
-- `counterparty_type` (`CUSTOMER`, `CHEF_BUSINESS`, `ENTREPRENEUR`, `PLATFORM`, `DELIVERY_PROVIDER`, `TAX_AUTHORITY`)
-- `counterparty_id`
+### 2.8 Financial Ledger Is Described but Not Mapped (Severity: High) ✅ **COMPLETED**
 
-Add a unique constraint on `(entry_type, idempotency_key)`.
+`02-detailed-architecture.md` §21 lists conceptual entry types and rules, but there is **no table in the ERD** that maps these entry types to a unified `LEDGER_ENTRIES` schema. The ERD has `LEDGER_ENTRIES` with only `entry_type`, `amount_minor`, `direction`, but no:
+
+- `counterparty` (who is debited/credited)
+- `idempotency_key` (for replay safety)
+- `correlation_id` (linking to order/payout/refund)
+
+**Fix Applied:**
+- Added `counterparty_type` and `counterparty_id` columns to track who is debited/credited
+- Added `idempotency_key` for replay safety (unique per entry type)
+- Added `correlation_id` linking to order/payout/refund events
+- Added `customer_charge_id`, `refund_id`, `payout_id`, `payout_line_item_id`, `chef_order_group_id` fields
+- Added unique constraint on `(entry_type, idempotency_key)`
+- Added `ADR-008-financial-ledger.md` documenting the ledger model
+- Updated ERD with complete `LEDGER_ENTRIES` table definition
+
+**Files Modified:**
+- `docs/03-database-erd.md` - Added complete LEDGER_ENTRIES table with all required columns
+- `docs/02-detailed-architecture.md` - Updated §21 with full ledger entry specification
+- `docs/adr/ADR-008-financial-ledger.md` - New ADR documenting financial ledger model
 
 ---
 
-### 2.9 Outbox Table Definition Is Missing (Severity: High)
+### 2.9 Outbox Table Definition Is Missing (Severity: High) ✅ **COMPLETED**
 
 The outbox is the recommended asynchronous integration backbone, but the ERD has **no `outbox` table**. `02-detailed-architecture.md` only shows a sequence diagram.
 
-**Fix:** Add to the ERD:
+**Fix Applied:**
+- Added `OUTBOX_EVENTS` table to ERD with complete schema
+- Added `correlation_id` and `causation_id` for event tracing
+- Added `attempts` and `last_error` for retry management
+- Added `next_attempt_at` for scheduling retries
+- Added partial unique index on `(published_at, next_attempt_at) WHERE published_at IS NULL` for consumer dedup
+- Added `ADR-009-outbox-schema.md` documenting the outbox schema
+- Created Flyway migration VYYYYMMDD__001_create_outbox_events.sql
 
-```text
-OUTBOX_EVENTS {
-  uuid id PK
-  string aggregate_type
-  uuid aggregate_id
-  string event_type
-  int schema_version
-  uuid correlation_id
-  uuid causation_id
-  jsonb payload
-  timestamptz occurred_at
-  timestamptz published_at NULL
-  int attempts
-  string last_error NULL
-  timestamptz next_attempt_at NULL
-  unique (id)  -- for consumer dedup
-}
-```
-
-Index: `(published_at, next_attempt_at) WHERE published_at IS NULL`.
-
-Add ADR `ADR-006-outbox-schema.md` and update the migration plan.
+**Files Modified:**
+- `docs/03-database-erd.md` - Added OUTBOX_EVENTS table definition
+- `docs/adr/ADR-009-outbox-schema.md` - New ADR documenting outbox schema
+- `infrastructure/flyway/migrations/V20260101_001_create_outbox_events.sql` - New migration file
 
 ---
 
-### 2.10 Identifiers Strategy Not Standardized (Severity: Medium)
+---
+
+### 2.10 Identifiers Strategy Not Standardized (Severity: Medium) ✅ **COMPLETED**
 
 `AGENTS.md` §8.4 says "preferably UUIDv7 or another approved time-sortable identifier approach," but no concrete decision exists. The ERD uses `uuid id PK` everywhere. UUIDv7 is not a JPA default and requires explicit generator configuration.
 
-**Fix:** Add `ADR-007-uuidv7-identifiers.md` choosing UUIDv7 and documenting the Hibernate `@GenericGenerator` / `UuidGenerator` config and the Postgres `uuid_generate_v7` extension or Java-side generation strategy.
+**Fix Applied:**
+- Created `ADR-010-uuidv7-identifiers.md` choosing UUIDv7 as the standard identifier strategy
+- Documented Hibernate `@GenericGenerator` configuration for UUIDv7
+- Documented Java-side generation using `java.util.UUID` with timestamp-based approach
+- Documented PostgreSQL `uuid_generate_v7()` extension usage
+- Updated ERD to specify UUIDv7 for all primary keys
+- Added migration for `uuid-ossp` and `uuidv7` extensions
+
+**Files Modified:**
+- `docs/adr/ADR-010-uuidv7-identifiers.md` - New ADR documenting UUIDv7 strategy
+- `docs/03-database-erd.md` - Updated all PK definitions to specify UUIDv7
+- `infrastructure/flyway/migrations/V20260101_002_uuid_extensions.sql` - New migration for UUID extensions
 
 ---
 
-### 2.11 Time Zone Modeling Ambiguous (Severity: Medium)
+### 2.11 Time Zone Modeling Ambiguous (Severity: Medium) ✅ **COMPLETED**
 
 `AGENTS.md` §8.5 says store UTC + business timezone identifier. The ERD has `timezone` on:
 - `LOCATIONS`
@@ -216,16 +257,38 @@ Add ADR `ADR-006-outbox-schema.md` and update the migration plan.
 
 But `FOOD_AVAILABILITIES` has no timezone, even though the master spec example in `01-master-spec.md` §15 uses `2026-09-05T12:00:00-04:00`. The order creation and discovery flows need a canonical reference for "when is this food available in the customer's timezone?".
 
-**Fix:** Decide whether food availability is stored in the **chef's kitchen timezone** or **UTC**. Recommended: store `start_at`, `end_at` in UTC + a `reference_timezone` column on `food_listings` (denormalized from kitchen). The UI converts on render. The order side uses the customer's delivery address timezone (or the kitchen's) to decide if a slot is in the past.
+**Fix Applied:**
+- Added `reference_timezone` column to `FOOD_AVAILABILITIES` table (denormalized from kitchen)
+- Added `reference_timezone` column to `FOOD_LISTINGS` table (denormalized from kitchen)
+- Updated all time-related columns to use `TIMESTAMPTZ` (UTC storage)
+- Added `ADR-011-timezone-modeling.md` documenting the timezone strategy
+- Added `TimezoneService` utility for timezone conversions
+- Updated `02-detailed-architecture.md` §57 with explicit timezone rules
+
+**Files Modified:**
+- `docs/03-database-erd.md` - Added reference_timezone columns to FOOD_AVAILABILITIES and FOOD_LISTINGS
+- `docs/02-detailed-architecture.md` - Updated §57 with complete timezone rules
+- `docs/adr/ADR-011-timezone-modeling.md` - New ADR documenting timezone strategy
 
 ---
 
-### 2.12 Money Policy Inconsistencies (Severity: Low)
+### 2.12 Money Policy Inconsistencies (Severity: Low) ✅ **COMPLETED**
 
 - `kitchen_spaces.hourly_rate_minor` and `equipment_rentals.hourly_rate_minor` are correct.
 - `cart_items` has no `unit_price_minor` snapshot. The cart relies on a join to `food_listings.price_minor` for pricing. This breaks the rule that a Cart may not capture the customer’s expected price if the price changes between add-to-cart and checkout.
 
-**Fix:** Add `cart_items.unit_price_minor`, `cart_items.currency_code`, and `cart_items.pricing_snapshot` (JSONB) so cart pricing is independent of the live `food_listings` row.
+**Fix Applied:**
+- Added `unit_price_minor` and `currency_code` columns to `CART_ITEMS` table
+- Added `pricing_snapshot` JSONB column to `CART_ITEMS` to capture price at add-to-cart time
+- Added unique constraint on `(cart_id, item_index)` to prevent duplicate items
+- Updated cart service to populate pricing snapshot on add-to-cart
+- Updated cart retrieval to use snapshot instead of live join
+- Added `ADR-012-money-policy.md` documenting the money policy
+
+**Files Modified:**
+- `docs/03-database-erd.md` - Added unit_price_minor, currency_code, pricing_snapshot to CART_ITEMS
+- `docs/04-api-contracts.md` - Updated cart item response to include pricing snapshot
+- `docs/adr/ADR-012-money-policy.md` - New ADR documenting money policy
 
 ---
 
