@@ -6,45 +6,34 @@ Proposed
 
 ## Context
 
-The Cheffy Bites platform requires a promotion engine that supports:
-
-- Chef promotions scoped to a Chef's own ChefOrderGroup
-- Platform promotions that may apply at the order level
-- Entrepreneur promotions for kitchen bookings and equipment rentals
-- Multiple promotion types (percentage, fixed amount, BOGO, quantity threshold, etc.)
-- Deterministic conflict resolution when multiple promotions are eligible
-- Immutable promotion snapshots for historical audit and refund recalculation
-
-The previous architecture used a blanket `stackable` flag and a simple "Chef promotions cannot stack with each other" rule. This approach is insufficient because:
-
-1. It does not account for promotions targeting different items within the same ChefOrderGroup.
-2. It does not support promotions at different scopes (ITEM, CHEF_ORDER_GROUP, DELIVERY, ORDER, PLATFORM).
-3. It does not provide deterministic resolution when multiple promotions conflict.
-4. It does not preserve enough information for refund recalculation.
+Cheffy Bites needs Chef, Platform, and Entrepreneur promotions with deterministic conflict resolution, Chef isolation, immutable historical evidence, and partial-refund recalculation.
 
 ## Decision
 
-### Promotion Scopes
+### Promotion Ownership
 
-Promotions are evaluated at the following scopes:
+```text
+CHEF
+PLATFORM
+ENTREPRENEUR
+```
+
+`PLATFORM` is an ownership domain, not itself a food-order calculation scope.
+
+### Promotion Calculation Scopes
+
+For food Orders:
 
 ```text
 ITEM
 CHEF_ORDER_GROUP
 DELIVERY
 ORDER
-PLATFORM
 ```
 
-- **ITEM**: Applies to individual eligible items within a ChefOrderGroup.
-- **CHEF_ORDER_GROUP**: Applies to a Chef's group subtotal or qualifying basis within a ChefOrderGroup.
-- **DELIVERY**: Applies to the delivery fee for the Kitchen Order.
-- **ORDER**: Applies to the overall order total (platform-level promotions).
-- **PLATFORM**: Platform-wide promotions that may target customers, segments, or locations.
+Entrepreneur booking/equipment promotions are evaluated in their own domain unless a future cross-domain rule is approved.
 
 ### Qualifying Basis
-
-Group-level promotions must declare an explicit qualifying basis:
 
 ```text
 ALL_ELIGIBLE_ITEMS
@@ -54,152 +43,104 @@ GROUP_SUBTOTAL
 DELIVERY_FEE
 ```
 
-- **ALL_ELIGIBLE_ITEMS**: All eligible items in the scope are counted toward the qualifying threshold.
-- **NON_DISCOUNTED_ELIGIBLE_ITEMS**: Only items not already discounted by an item-level promotion are counted. A group threshold promotion using this basis must exclude items already discounted by item-level promotions.
-- **SPECIFIC_TARGET_ITEMS**: Only explicitly targeted items are counted.
-- **GROUP_SUBTOTAL**: The group subtotal (after item-level discounts) is the qualifying amount.
-- **DELIVERY_FEE**: The delivery fee is the qualifying amount.
+`NON_DISCOUNTED_ELIGIBLE_ITEMS` excludes items already receiving the relevant item-level discounts.
 
-### Compatibility and Conflict Resolution
+### Chef Independence
 
-There is no blanket global `stackable` flag. Promotion conflict resolution is deterministic and uses the following ordered criteria:
+Chef promotions evaluate only within the same ChefOrderGroup. Chef A items can never qualify Chef B promotions, and vice versa. Promotions for separate ChefOrderGroups may coexist.
 
-1. **Scope**: Promotions at different scopes may coexist (e.g., an ITEM promotion and a CHEF_ORDER_GROUP promotion).
-2. **Compatibility**: Promotions may declare a `compatibility_group`. Promotions in the same compatibility group may coexist. Promotions in conflicting compatibility groups are mutually exclusive.
-3. **Exclusivity**: Promotions may declare an `exclusivity_group`. Only one promotion from an exclusivity group may be applied per scope/target.
-4. **Priority**: Higher priority value wins when promotions conflict.
-5. **Savings**: When priority is equal, the promotion that produces greater customer savings wins.
-6. **Deterministic Tie-Breaker**: When savings are equal, the promotion with the earlier creation timestamp (or lexicographically smaller ID) wins, ensuring deterministic behavior.
+### Deterministic Conflict Resolution
 
-### Chef Promotion Independence
-
-Chef A and Chef B are independent promotion domains.
-
-- Chef A promotions evaluate only against Chef A's ChefOrderGroup items.
-- Chef B promotions evaluate only against Chef B's ChefOrderGroup items.
-- Chef A items must never be used to qualify Chef B promotions, and vice versa.
-- Chef A and Chef B promotions may coexist in the same Order because they operate on independent scopes.
+1. Determine eligibility.
+2. Partition by target and calculation scope.
+3. Apply compatibility rules.
+4. Apply exclusivity rules.
+5. Higher priority wins conflicts.
+6. If equal, greater customer savings wins.
+7. If still equal, lexicographically smaller immutable promotion UUID wins.
 
 ### Promotion Evaluation Sequence
 
 ```text
 1. Partition Order into ChefOrderGroups
-2. For each ChefOrderGroup:
-   a. Evaluate ITEM-level promotions per eligible item
-   b. Mark discounted items
-   c. Calculate qualifying subtotal by configured basis
-   d. Evaluate CHEF_ORDER_GROUP promotions
-   e. Resolve conflicts deterministically
-3. Evaluate DELIVERY promotions
-4. Evaluate ORDER/PLATFORM promotions
-5. Persist immutable PromotionSnapshot per applied/rejected promotion
-6. Return Pricing Result
+2. Evaluate ITEM promotions
+3. Resolve ITEM conflicts
+4. Mark resulting discounts
+5. Calculate configured qualifying basis
+6. Evaluate CHEF_ORDER_GROUP promotions
+7. Resolve conflicts
+8. Evaluate DELIVERY promotions
+9. Evaluate ORDER promotions
+10. Persist immutable PromotionSnapshots for every evaluated promotion
+11. Produce Pricing Result
+12. Persist corresponding Financial Snapshot
 ```
 
 ### Promotion Snapshot
 
-At checkout, the promotion engine must persist an immutable `PromotionSnapshot` for each evaluated promotion (applied or rejected). The snapshot must preserve:
+Every evaluated promotion, applied or rejected, records promotion/version, owner, scope, qualifying basis, eligible/excluded items, qualifying subtotal, discount, result/reason, conflict evidence, ChefOrderGroup where applicable, Order, and timestamp.
 
-```text
-promotion_id
-promotion_version
-scope
-qualifying_basis
-eligible_item_ids
-excluded_item_ids
-qualifying_subtotal_minor
-discount_minor
-applied_status (APPLIED | REJECTED)
-rejection_reason
-chef_order_group_id (where applicable)
-order_id
-created_at
-```
-
-Historical orders must not depend on the current live promotion configuration. The snapshot is the authoritative record for refund recalculation.
+Original snapshots remain immutable. Refund recalculation creates new evidence and financial adjustments.
 
 ### Promotion Model
 
 ```sql
 CREATE TABLE promotion.promotions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_type VARCHAR(20) NOT NULL, -- CHEF, PLATFORM, ENTREPRENEUR
+    id UUID PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
     owner_id UUID NOT NULL,
-    promotion_scope VARCHAR(30) NOT NULL, -- ITEM, CHEF_ORDER_GROUP, DELIVERY, ORDER, PLATFORM
-    promotion_type VARCHAR(30) NOT NULL, -- PERCENTAGE, FIXED_AMOUNT, BOGO, etc.
+    promotion_scope VARCHAR(30) NOT NULL,
+    promotion_type VARCHAR(30) NOT NULL,
     name VARCHAR(255) NOT NULL,
     valid_from TIMESTAMPTZ NOT NULL,
     valid_to TIMESTAMPTZ NULL,
     priority INT NOT NULL DEFAULT 0,
-    qualifying_basis VARCHAR(50) NULL, -- required for group-level promotions
+    qualifying_basis VARCHAR(50) NULL,
     compatibility_group VARCHAR(100) NULL,
     exclusivity_group VARCHAR(100) NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     conditions JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (valid_to IS NULL OR valid_to > valid_from)
 );
 ```
 
-### Promo Code Rules
+Promotion targeting and uniqueness follow accepted ADR-006.
 
-- A customer may use only one promo code per transaction.
-- A promo code is single-use.
-- Platform promotions may be restricted to specific users/segments.
-- Promotions expire according to their configured validity.
-- An expired promotion is invalid at checkout even if an item was previously added to the cart.
-- A promotion becoming invalid after an item is removed/refunded must trigger the configured recalculation behavior.
+## Promo Code Rules
 
-### Partial Refund Recalculation
+- At most one customer-entered promo code may be applied per checkout.
+- Automatically applied promotions may coexist when compatibility/exclusivity rules permit.
+- Single-use is an explicit promotion policy backed by redemption records.
+- Expired promotions are invalid at evaluation time.
+- Items remaining in carts do not reserve expired promotions.
 
-When an Order is partially refunded:
+## Partial Refund Recalculation
 
-1. Identify the refunded OrderItems.
-2. Remove their financial contribution from the remaining Order.
-3. Recalculate the affected ChefOrderGroup.
-4. Re-evaluate promotion validity according to the approved promotion rules.
-5. Calculate the refund/adjustment.
-6. Record the resulting financial adjustment.
-7. Never overwrite the original finalized financial transaction.
-
-The original `PromotionSnapshot` must remain available as evidence for the refund recalculation.
+1. Identify refunded items.
+2. Identify affected ChefOrderGroup and scopes.
+3. Load original promotion evidence.
+4. Recalculate according to approved rules.
+5. Determine refund/adjustment.
+6. Create new immutable financial records.
+7. Preserve all original promotion and financial evidence.
 
 ## Consequences
 
 ### Positive
-- Deterministic promotion resolution eliminates ambiguity.
-- Chef promotion isolation is enforced at the evaluation level.
-- Promotion snapshots provide full audit trail for refunds.
-- Multiple promotion types and scopes are supported.
-- The engine is extensible to future promotion types.
+
+- Deterministic resolution.
+- Strict Chef promotion isolation.
+- Supports multiple promotion scopes.
+- Avoids blanket `stackable` logic.
+- Strong historical evidence.
 
 ### Negative
-- Increased complexity in promotion evaluation logic.
-- More data is stored per checkout (snapshots).
-- Conflict resolution requires careful testing.
 
-## Implementation Notes
+- More complex pricing logic and tests.
+- More snapshot storage.
 
-1. **Promotion Engine Service**: Implement a dedicated `PromotionEvaluationService` that partitions the order by ChefOrderGroup and evaluates promotions per scope.
-2. **Snapshot Persistence**: Persist `PromotionSnapshot` records in the same transaction as the order/pricing changes.
-3. **Refund Recalculation**: Implement a `PromotionRecalculationService` that loads the original snapshot and recalculates eligibility after partial refunds.
-4. **Testing**: Unit tests must cover:
-   - Chef A promotion does not use Chef B items.
-   - Item-level and group-level promotions coexist when scopes differ.
-   - `NON_DISCOUNTED_ELIGIBLE_ITEMS` excludes items already discounted by item-level promotions.
-   - Expired promotions are rejected at checkout.
-   - Single-use promo codes cannot be reused.
-   - Partial refunds trigger correct recalculation.
-   - Deterministic tie-breaking when savings are equal.
+## Dependencies
 
-## Alternatives Considered
-
-1. **Blanket `stackable` flag** — Rejected: Cannot express the required compatibility, exclusivity, and priority rules.
-2. **Priority-only resolution** — Rejected: Priority alone does not guarantee the best customer outcome and can produce non-deterministic results when priorities are equal.
-3. **Separate Chef promotion tables** — Rejected: A unified promotion model with scope and ownership is more maintainable and extensible.
-
-## References
-
-- Master Spec §20–25 (Promotions Engine, Stacking Rules, Scope, Evaluation, Validation, Partial Refund)
-- ADR-006 (Promotion Targeting Model)
-- ADR-013 (ChefOrderGroup Aggregate + Financial Boundary)
+ADR-006, ADR-013, ADR-015, ADR-016.

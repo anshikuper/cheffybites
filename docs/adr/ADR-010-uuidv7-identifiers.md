@@ -1,4 +1,4 @@
-# ADR-010 — UUIDv7 Identifier Strategy
+# ADR-010 --- UUIDv7 Identifier Strategy
 
 ## Status
 
@@ -6,164 +6,182 @@ Proposed
 
 ## Context
 
-The Cheffy Bites architecture requires a consistent identifier strategy across all services and databases. The current ERD uses generic `uuid id PK` without specifying the UUID version. `AGENTS.md` §8.4 recommends "preferably UUIDv7 or another approved time-sortable identifier approach."
+Cheffy Bites requires a consistent identifier strategy across domain
+entities, financial records, events, and database tables.
 
-UUIDv7 (as defined in RFC 9562) provides:
-- Time-ordered identifiers (better for database indexing)
-- 48-bit Unix timestamp with millisecond precision
-- 74 bits of randomness
-- Better performance for B-tree indexes compared to random UUIDs
+The current architecture uses PostgreSQL `uuid` columns but does not
+consistently define the UUID version.
+
+UUIDv7, standardized by RFC 9562, is time-ordered and preserves the
+standard 128-bit UUID representation. Compared with random UUIDv4
+values, UUIDv7 generally provides better insertion locality for B-tree
+indexes while remaining suitable for distributed identifier generation.
 
 ## Decision
 
-We will use **UUIDv7** as the standard identifier for all primary keys and foreign keys across the Cheffy Bites platform.
+UUIDv7 is the default identifier strategy for newly created Cheffy Bites
+domain records that use UUID identifiers.
 
-### Generation Strategy
+The database column type remains:
 
-**Primary: Java-side generation** (recommended for portability and testability)
-
-```java
-// Utility class for UUIDv7 generation
-public final class UuidV7 {
-    private static final long EPOCH_MILLIS = 12219292800000L; // UUID epoch: 1582-10-15
-    
-    public static UUID generate() {
-        long timestamp = System.currentTimeMillis();
-        long uuidTime = timestamp * 10000 + EPOCH_MILLIS;
-        
-        byte[] bytes = new byte[16];
-        
-        // Time high (48 bits)
-        bytes[0] = (byte) (uuidTime >> 40);
-        bytes[1] = (byte) (uuidTime >> 32);
-        bytes[2] = (byte) (uuidTime >> 24);
-        bytes[3] = (byte) (uuidTime >> 16);
-        bytes[4] = (byte) (uuidTime >> 8);
-        bytes[5] = (byte) uuidTime;
-        
-        // Version (4 bits) + time low (12 bits)
-        bytes[6] = (byte) (0x70 | ((uuidTime >> 56) & 0x0F)); // Version 7
-        bytes[7] = (byte) (uuidTime >> 48);
-        
-        // Variant (2 bits) + random (62 bits)
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(bytes);
-        bytes[8] = (byte) (0x80 | (bytes[8] & 0x3F)); // Variant 10x
-        
-        return UUID.nameUUIDFromBytes(bytes); // Or construct directly
-    }
-}
+``` text
+UUID
 ```
 
-**Alternative: PostgreSQL `uuid_generate_v7()`** (if using `uuid-ossp` extension with v7 support)
+Foreign keys do not have a UUID "version" of their own; they store the
+UUID value generated for the referenced record.
 
-```sql
--- Requires PostgreSQL 16+ or uuid-ossp with v7 support
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+## Generation Strategy
 
--- For PostgreSQL 17+ with native UUIDv7
-SELECT gen_random_uuid_v7();
-```
+### Primary --- Application-Side Generation
 
-### Hibernate Configuration
+Application services generate UUIDv7 identifiers before persistence.
 
-```java
-@Entity
-public class BaseEntity {
-    @Id
-    @GeneratedValue(generator = "uuid7")
-    @GenericGenerator(
-        name = "uuid7",
-        type = UuidV7Generator.class
-    )
-    @Column(name = "id", updatable = false, nullable = false, columnDefinition = "uuid")
-    private UUID id;
-}
+The implementation must use a standards-compliant UUIDv7 generator from
+the approved Java/Hibernate stack or an approved, well-tested library.
 
-// Custom generator
-public class UuidV7Generator implements IdentifierGenerator {
-    @Override
-    public Object generate(SharedSessionContractImplementor session, Object object) {
-        return UuidV7.generate();
-    }
-}
-```
+Do not implement UUIDv7 using ad-hoc bit manipulation.
 
-### Database Schema
+In particular:
 
-All primary keys and foreign keys use UUIDv7:
+-   UUIDv7 uses Unix epoch milliseconds directly.
+-   UUIDv7 does not use the legacy UUID Gregorian epoch conversion.
+-   Do not call `UUID.nameUUIDFromBytes(...)`; that creates a name-based
+    UUID and does not preserve a UUIDv7 layout.
+-   Do not overwrite timestamp/version bytes by calling
+    `SecureRandom.nextBytes(...)` after constructing them.
 
-```sql
--- Example table with UUIDv7
+The exact Java API is an implementation choice and must be verified
+against the Hibernate/Spring Boot version used by the project.
+
+### Database-Side Generation
+
+Database-side UUIDv7 generation may be used where the deployed
+PostgreSQL version provides a verified native UUIDv7 function.
+
+Flyway migrations must not assume a function such as
+`gen_random_uuid_v7()` exists unless that exact function is available in
+the deployed PostgreSQL version.
+
+If application-side generation is the project standard, table
+definitions should normally omit UUID defaults:
+
+``` sql
 CREATE TABLE identity.users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid_v7(), -- or application-generated
+    id UUID PRIMARY KEY,
     email VARCHAR(255) NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- Foreign keys reference UUIDv7
-CREATE TABLE organization.organizations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid_v7(),
-    owner_id UUID NOT NULL REFERENCES identity.users(id),
-    ...
-);
 ```
 
-### Migration Strategy
+## Persistence Rules
 
-1. Add UUID extensions to database:
-```sql
--- V20260101_002_uuid_extensions.sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
--- For PostgreSQL 17+, native UUIDv7 is available
+-   UUIDv7 identifiers are generated once.
+-   Identifiers are immutable.
+-   IDs are generated before an entity is published in a domain event.
+-   The same identifier is used across persistence, API references, and
+    event correlation where that entity ID is required.
+-   External provider identifiers remain separate from internal UUIDv7
+    identifiers.
+
+## Ordering Rules
+
+UUIDv7 provides useful time ordering, but identifier ordering must not
+replace explicit business timestamps.
+
+For deterministic pagination, use a stable tuple such as:
+
+``` text
+(created_at, id)
 ```
 
-2. Update all existing tables to use UUIDv7 (if any exist with different UUID versions)
+or another domain-appropriate ordering key.
 
-3. Configure Hibernate to use UUIDv7 generator globally
+Do not infer authoritative business time from a UUID timestamp when a
+canonical timestamp field exists.
+
+## Security and Privacy
+
+UUIDv7 contains an approximate creation timestamp.
+
+Therefore:
+
+-   IDs must not be treated as secrets.
+-   Authorization must never depend on identifier unpredictability.
+-   Public APIs must enforce normal authentication and authorization
+    checks.
+-   Sensitive creation times must not be inferred from IDs as an
+    application feature unless explicitly required.
+
+## Migration Strategy
+
+For an existing database:
+
+1.  Do not rewrite valid existing UUID primary keys solely to convert
+    UUIDv4 to UUIDv7.
+2.  Keep existing IDs stable.
+3.  Generate UUIDv7 for new records after the strategy is adopted.
+4.  Foreign keys continue referencing existing identifiers normally.
+5.  Any exceptional ID migration requires a separate migration plan and
+    ADR because changing primary keys can affect references, events,
+    caches, logs, and external integrations.
 
 ## Consequences
 
 ### Positive
-- Time-ordered IDs improve B-tree index performance
-- Better locality of reference for recent records
-- Natural ordering for pagination and time-range queries
-- 48-bit timestamp provides ~108 years of uniqueness
-- Standardized across all services and databases
+
+-   Standard UUID representation.
+-   Better time locality than random UUIDv4 identifiers.
+-   Suitable for distributed generation.
+-   Consistent identifier strategy across the platform.
+-   No central worker-ID coordination.
 
 ### Negative
-- Requires custom Hibernate generator (not built-in)
-- Slightly larger than UUIDv4 (same 128 bits, but structured)
-- Timestamp component leaks creation time (minimal privacy concern)
-- Need to ensure clock synchronization across services
 
-## Implementation Notes
-
-- Add `UuidV7` utility class to `common` module
-- Configure Spring Boot to use custom generator by default
-- Update all entity base classes to use UUIDv7
-- Add Flyway migration for UUID extensions
-- Document in developer onboarding guide
+-   UUIDv7 exposes approximate creation time.
+-   Mixed UUID versions may exist after adoption if legacy data already
+    uses UUIDv4.
+-   Generator support must be verified against the actual
+    Java/Hibernate/PostgreSQL versions.
+-   UUID ordering is not a substitute for explicit business timestamps.
 
 ## Alternatives Considered
 
-1. **UUIDv4 (random)** — Current default in many systems
-   - Rejected: Poor index performance, no natural ordering
+### UUIDv4
 
-2. **ULID** — 128-bit, time-ordered, base32 encoded
-   - Rejected: Not native UUID format, requires string columns
+Not selected as the default because random values provide poorer B-tree
+insertion locality.
 
-3. **TSID** — Time-sorted ID, 64-bit
-   - Rejected: 64-bit may not be sufficient for distributed systems
+### ULID
 
-4. **Snowflake IDs** — 64-bit, time + worker + sequence
-   - Rejected: Requires worker ID coordination, not standard UUID
+Not selected because UUIDv7 provides time ordering while retaining the
+native UUID data type and standard UUID representation.
 
-5. **PostgreSQL `gen_random_uuid()` (v4)** — Built-in
-   - Rejected: Same issues as UUIDv4
+### TSID / Snowflake-Style IDs
+
+Not selected because they introduce a separate 64-bit identifier scheme
+and may require additional coordination or library conventions.
+
+## Implementation Notes
+
+1.  Select and test one RFC 9562-compliant UUIDv7 generator for the
+    backend stack.
+2.  Centralize identifier generation in a shared infrastructure utility
+    or approved persistence mechanism.
+3.  Use PostgreSQL `UUID` columns.
+4.  Do not add `uuid-ossp` solely for UUIDv7 unless an explicitly
+    required database function depends on it.
+5.  Add tests that verify:
+    -   UUID version is 7.
+    -   RFC variant is correct.
+    -   IDs are unique.
+    -   IDs remain stable after persistence.
+6.  Update ERD and developer guidance to state UUIDv7 as the default for
+    new UUID identifiers.
 
 ## References
 
-- RFC 9562: UUID Version 7
-- PostgreSQL 17 UUIDv7 support
-- Hibernate IdentifierGenerator SPI
+-   RFC 9562 --- Universally Unique IDentifiers (UUIDs), UUID Version 7
+-   PostgreSQL UUID data type documentation
+-   Hibernate identifier-generation documentation for the project's
+    selected version

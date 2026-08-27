@@ -1,4 +1,4 @@
-# ADR-005 — Order Fulfillment Type Separation
+# ADR-005 --- Order Fulfillment Type Separation
 
 ## Status
 
@@ -6,99 +6,191 @@ Proposed
 
 ## Context
 
-The original Order state machine in `02-detailed-architecture.md` §18.1 contained a transition `PICKED_UP → COMPLETED` that was duplicated from the delivery path. This created confusion about the state machine and made it unclear which fulfillment types were supported.
+The Order fulfillment workflow must explicitly distinguish customer
+pickup from delivery.
 
-The problem:
+The previous state model allowed `PICKED_UP` to mean both customer
+pickup and delivery-driver pickup, which made transitions ambiguous. It
+also mixed Chef preparation states with Order fulfillment states.
 
-```text
-READY_FOR_FULFILLMENT → PICKED_UP
-DRIVER_ASSIGNED → PICKED_UP
-PICKED_UP → OUT_FOR_DELIVERY
-PICKED_UP → COMPLETED
-```
-
-- `PICKED_UP` can be reached from both `READY_FOR_FULFILLMENT` (pickup) and `DRIVER_ASSIGNED` (delivery with handoff)
-- `PICKED_UP → COMPLETED` is the pickup completion path
-- `PICKED_UP → OUT_FOR_DELIVERY` is the delivery continuation path
-
-This is valid but not explicit. Different stakeholders need to understand the model without reading the state machine closely.
+ADR-013 establishes `ChefOrderGroup` as the Chef-level preparation
+boundary. Therefore, the parent Order should coordinate aggregate
+readiness and then own the customer/delivery fulfillment workflow.
 
 ## Decision
 
-We will add an explicit `FULFILLMENT_TYPE` field to the Order aggregate and split the state machine into two parallel lanes:
+Every Order must have an immutable `fulfillment_type`:
 
-### Order Fulfillment Types
-
-```text
-FULFILLMENT_TYPE: PICKUP | DELIVERY
+``` text
+PICKUP
+DELIVERY
 ```
+
+`fulfillment_type` is selected before checkout is finalized and becomes
+immutable once the Order is created.
+
+### Preparation Coordination
+
+Chef preparation is tracked by `ChefOrderGroup` as defined by ADR-013:
+
+``` text
+PENDING_ACCEPTANCE
+→ ACCEPTED
+→ PREPARING
+→ READY
+```
+
+The parent Order may enter `READY_FOR_FULFILLMENT` only when the Order
+coordination rules determine that all required, non-cancelled
+ChefOrderGroups are ready.
 
 ### Pickup Lane
 
-```text
-PENDING_ACCEPTANCE
-  → ACCEPTED
-  → PREPARING
-  → READY
-  → HANDED_OFF     (set when customer arrives to pick up)
-  → PICKED_UP
-  → COMPLETED
+``` text
+PAID
+→ PENDING_CHEF_ACCEPTANCE
+→ ACCEPTED
+→ PREPARING
+→ READY_FOR_FULFILLMENT
+→ PICKED_UP
+→ COMPLETED
 ```
+
+For `PICKUP`, `PICKED_UP` means the completed handoff to the customer or
+the customer's authorized pickup party.
 
 ### Delivery Lane
 
-```text
-PENDING_ACCEPTANCE
-  → ACCEPTED
-  → PREPARING
-  → READY
-  → DELIVERY_REQUESTED
-  → DRIVER_ASSIGNED
-  → PICKED_UP
-  → OUT_FOR_DELIVERY
-  → DELIVERED
-  → COMPLETED
+``` text
+PAID
+→ PENDING_CHEF_ACCEPTANCE
+→ ACCEPTED
+→ PREPARING
+→ READY_FOR_FULFILLMENT
+→ DELIVERY_REQUESTED
+→ DRIVER_ASSIGNED
+→ DRIVER_PICKED_UP
+→ OUT_FOR_DELIVERY
+→ DELIVERED
+→ COMPLETED
 ```
 
-### Constraints
+For `DELIVERY`, `DRIVER_PICKED_UP` explicitly means the delivery driver
+has taken possession of the Order.
 
-- `FULFILLMENT_TYPE` must be set at order creation time and cannot be changed
-- `PICKED_UP` state is valid for both pickup and delivery orders
-- `HANDED_OFF` is set when the kitchen physically hands off the order (pickup customer or delivery driver)
-- `OUT_FOR_DELIVERY` is only valid for delivery orders
-- `COMPLETED` can be reached from `PICKED_UP` (pickup) or `DELIVERED` (delivery)
+This avoids overloading `PICKED_UP` with two different meanings.
+
+## Constraints
+
+-   `fulfillment_type` is required for every Order.
+-   `fulfillment_type` is immutable after Order creation.
+-   `PICKED_UP` is valid only for `PICKUP`.
+-   `DELIVERY_REQUESTED`, `DRIVER_ASSIGNED`, `DRIVER_PICKED_UP`,
+    `OUT_FOR_DELIVERY`, and `DELIVERED` are valid only for `DELIVERY`.
+-   `COMPLETED` is reached from `PICKED_UP` for pickup Orders.
+-   `COMPLETED` is reached from `DELIVERED` for delivery Orders.
+-   ChefOrderGroup readiness must be coordinated before the Order enters
+    `READY_FOR_FULFILLMENT`.
+-   Cancellation/refund transitions remain governed by the Order
+    cancellation and financial rules and are not redefined by this ADR.
+
+## Database Representation
+
+``` sql
+ALTER TABLE "order".orders
+    ADD COLUMN fulfillment_type VARCHAR(20) NOT NULL;
+
+ALTER TABLE "order".orders
+    ADD CONSTRAINT ck_orders_fulfillment_type
+    CHECK (fulfillment_type IN ('PICKUP', 'DELIVERY'));
+```
+
+Application-level state-transition validation must enforce
+fulfillment-type-specific transitions.
+
+## API Contract
+
+Order creation and responses must expose:
+
+``` json
+{
+  "fulfillmentType": "PICKUP"
+}
+```
+
+or:
+
+``` json
+{
+  "fulfillmentType": "DELIVERY"
+}
+```
+
+Clients must not be allowed to change the value after Order creation.
+
+## Events
+
+Fulfillment events should use unambiguous names:
+
+``` text
+OrderReadyForFulfillment.v1
+OrderPickedUp.v1
+DeliveryRequested.v1
+DriverAssigned.v1
+DriverPickedUp.v1
+OrderOutForDelivery.v1
+OrderDelivered.v1
+OrderCompleted.v1
+```
+
+Event contracts follow ADR-016.
 
 ## Consequences
 
 ### Positive
 
-- State machine is self-documenting and explicit
-- Fulfillment type can be used for analytics and routing
-- Clear separation of pickup and delivery workflows
-- Reduces confusion for new developers
+-   Pickup and delivery paths are explicit.
+-   `PICKED_UP` no longer has two meanings.
+-   Chef preparation remains owned by ChefOrderGroup.
+-   Delivery-specific states are clearly separated.
+-   Analytics and routing can rely on an immutable fulfillment type.
 
 ### Negative
 
-- Additional field on Order aggregate
-- Need to validate fulfillment type transitions
-- May need to update existing tests
+-   Existing diagrams, APIs, tests, and event contracts must be updated.
+-   Order coordination logic must aggregate ChefOrderGroup readiness.
+-   A separate `DRIVER_PICKED_UP` state adds one explicit state to the
+    delivery workflow.
 
 ## Alternatives Considered
 
-1. **Implicit labeling** — Add footnotes to existing diagram explaining paths
-   - Rejected: Not explicit enough, easy to miss
+### Shared `PICKED_UP` State
 
-2. **Single state machine with guard conditions** — Use `FULFILLMENT_TYPE` as a guard condition on transitions
-   - Considered: More complex, harder to reason about
-   - Rejected: Parallel lanes are clearer
+Rejected because customer pickup and driver pickup represent different
+business meanings and lead to ambiguous transitions.
 
-3. **Subclassing Order** — Create `PickupOrder` and `DeliveryOrder` subclasses
-   - Rejected: Over-engineering for MVP, single table inheritance adds complexity
+### `HANDED_OFF` Plus `PICKED_UP`
+
+Rejected because it introduces redundant states unless a distinct
+business event must occur between physical handoff and possession.
+
+### Order Subclasses
+
+Rejected because separate `PickupOrder` and `DeliveryOrder` types add
+unnecessary persistence and domain complexity.
 
 ## Implementation Notes
 
-- Add `fulfillment_type` column to `ORDERS` table: `VARCHAR(20) NOT NULL`
-- Add database check constraint: `CHECK (fulfillment_type IN ('PICKUP', 'DELIVERY'))`
-- Add state transition validation in application service
-- Update API contracts to include `fulfillmentType` in order responses
-- Update `02-detailed-architecture.md` §18.1 with explicit lane diagram
+1.  Add `fulfillment_type` to `"order".orders`.
+2.  Update Order transition validation.
+3.  Update `02-detailed-architecture.md` Order state diagrams.
+4.  Update API contracts.
+5.  Update event contracts.
+6.  Add tests proving that pickup-only and delivery-only transitions
+    cannot cross lanes.
+7.  Coordinate readiness using ChefOrderGroup rules from ADR-013.
+
+## Dependencies
+
+-   ADR-013 --- ChefOrderGroup Aggregate + Financial Boundary
+-   ADR-016 --- Event Versioning
