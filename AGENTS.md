@@ -25,29 +25,29 @@ Before implementing a new domain, changing an existing domain, changing a databa
 
 For major cross-domain changes, review all relevant documents rather than only one document.
 
-## Document precedence
+## Scope-specific document ownership
 
-Use the following precedence:
+Each canonical document is authoritative within its declared scope; do not apply a global linear document-precedence hierarchy:
 
-```text
-Explicitly confirmed business requirements
-        ↓
-Approved ADRs
-        ↓
-Detailed architecture
-        ↓
-Database / API / Event contracts
-        ↓
-Implementation details
-```
+- `docs/adr/` owns architecture decisions and each ADR's status. Accepted ADRs govern the decisions they record; Proposed ADRs are not silently treated as Accepted.
+- `docs/01-master-spec.md` owns product requirements, business rules, domain behavior, invariants, capabilities, and business policy.
+- `docs/02-detailed-architecture.md` owns integrated architecture explanation, domain/component interaction, cross-domain coordination, implementation direction, and architectural overview. It does not override specialized persistence, API, or event representations.
+- `docs/03-database-erd.md` owns exact canonical persistence representation.
+- `docs/04-api-contracts.md` owns exact canonical API representation.
+- `docs/05-event-contracts.md` owns exact canonical event representation.
+- `AGENTS.md` is implementation-agent guidance that summarizes and points to canonical sources; it does not override them.
+- `plans/architecture-review.md` is superseded historical material and has no canonical authority.
 
 If two sources conflict:
 
-1. Do not silently choose one.
+1. Do not silently choose one based on an assumed hierarchy.
 2. Identify the conflict.
 3. Explain the impact.
-4. Propose the required documentation or ADR change.
-5. Wait for approval before implementing a material conflicting change.
+4. Stop implementation of the conflicting area.
+5. Propose explicit reconciliation of the owning canonical documents or ADR.
+6. Wait for approval before implementing a material conflicting change.
+
+Where an Accepted ADR records an architectural decision, persistence, API, event, and integrated-architecture documents must conform to that decision within their respective scopes. A Proposed ADR does not automatically override an Accepted ADR or the current approved baseline.
 
 The AI must never invent a business rule merely because an implementation detail is missing.
 
@@ -409,18 +409,18 @@ The frontend may provide early validation for UX, but the backend remains author
 
 # 10. ChefOrderGroup Is First-Class
 
-`ChefOrderGroup` is a first-class operational, reporting, refund, and financial entity.
+`ChefOrderGroup` is the first-class Chef operational boundary, Chef promotion evaluation boundary, financial allocation/reference boundary, refund traceability boundary, payout traceability boundary, and reporting boundary for one Chef's portion of a Kitchen Order.
 
 It represents one Chef's portion of a Kitchen Order.
 
-It is the authoritative boundary for:
+It is the authoritative Chef-level boundary for:
 
 - Chef-specific order history
-- Chef fulfillment state
+- Chef preparation state
 - Chef promotion evaluation
-- Chef revenue calculation
-- Chef refunds/adjustments
-- Chef payout allocation
+- Chef financial allocation references
+- Chef refund traceability
+- Chef payout traceability
 - Chef analytics/reporting
 - Chef operational status
 
@@ -449,13 +449,15 @@ ChefOrderGroup must remain independently queryable for:
 ```text
 Chef order history
 Chef reporting
-Chef fulfillment
-Chef refund allocation
-Chef payout calculation
+Chef preparation
+Chef refund traceability
+Chef payout traceability
 Chef analytics
 ```
 
-Never calculate a Chef's historical financial position merely by querying all items in the parent Order without using the ChefOrderGroup boundary.
+The financial domain owns `Payment`, `PaymentAllocation`, `Refund`, `RefundLine`, `Payout`, `PayoutLine`, and Ledger entries/transactions. Those financial records reference `chef_order_group_id` where applicable; this reference does not make ChefOrderGroup the owner of a financial aggregate.
+
+Never calculate a Chef's historical financial position merely by querying all items in the parent Order without using financial records that preserve the ChefOrderGroup allocation/reference boundary.
 
 ---
 
@@ -562,7 +564,7 @@ Never use the entire Order total or quantities from another Chef to satisfy a Ch
 
 Platform promotions may apply at the overall transaction level subject to promotion configuration.
 
-Current stacking rule:
+Platform and Chef promotions may coexist when their scopes and compatibility rules permit:
 
 ```text
 Platform promotion
@@ -572,14 +574,27 @@ Chef promotion
 Allowed
 ```
 
-Chef promotions cannot stack with another Chef promotion unless explicitly configured by a future approved rule.
+Chef A and Chef B are independent promotion domains because each Chef's promotions are evaluated within that Chef's own ChefOrderGroup. Promotions belonging to different ChefOrderGroups may coexist.
+
+Within one ChefOrderGroup:
+
+- Item-level promotions on different items may coexist.
+- Item-level and ChefOrderGroup-level promotions may coexist when their monetary scopes do not overlap and compatibility permits.
+- Competing promotions targeting the same monetary scope are resolved through compatibility and exclusivity rules, priority, customer savings, and the deterministic tie-breaker defined by ADR-014.
+
+Do not use one global `stackable` boolean as the canonical promotion compatibility rule.
 
 ### Promo codes
 
 Current rules:
 
-- Customer may use only one promo code per transaction.
-- A promo code is single-use.
+- At most one customer-entered promo code may be applied during one Order checkout. This is Order-level entered-code cardinality, not a global one-use limit for the code.
+- A specific customer may successfully redeem a specific customer-entered promo code at most once. Consuming redemption-state uniqueness applies to the `(promo_code_id, customer_id)` pair; do not implement ordinary codes using general `UNIQUE(promo_code_id)`.
+- A promo code may define optional `max_global_uses`. `NULL` or absent means no configured global redemption cap; `max_global_uses = 1` makes that code globally one-time. Do not introduce `max_uses_per_customer`; the per-customer successful-redemption limit is fixed at one.
+- Customer-entered redemption lifecycle is `RESERVED → REDEEMED` or `RESERVED → RELEASED`. `RESERVED` temporarily consumes per-customer and optional global capacity. `REDEEMED` permanently consumes customer eligibility and global capacity. `RELEASED` is terminal historical evidence that no longer consumes capacity and permits a later attempt using a new redemption record.
+- Full or partial refunds do not transition `REDEEMED` to `RELEASED`, restore customer eligibility, or overwrite original redemption evidence.
+- Automatically applied promotions do not create promo-code redemption records merely because they apply. Their PromotionApplication may have no `promo_code_id`, and compatible automatic promotions may coexist under the promotion-engine rules.
+- For an authoritative global-cap reservation, lock the relevant PromoCode row before counting/checking capacity. `RESERVED` and `REDEEMED` count against `max_global_uses`; `RELEASED` does not. Concurrent requests must not exceed the global cap, and consuming-state uniqueness must prevent concurrent duplicate claims for the same customer/code.
 - Platform promotions may be restricted to specific users.
 - Promotions expire according to their configured validity.
 - An expired promotion must not be applied at checkout.
@@ -724,7 +739,7 @@ Order
  └── ChefOrderGroup C → payout allocation for Chef C
 ```
 
-`ChefOrderGroup` is the originating operational boundary for Chef payout calculation.
+`ChefOrderGroup` is the originating operational and financial-reference boundary for Chef payout calculation. The financial domain owns the resulting Payout and PayoutLine records.
 
 Payout line items should preserve references to:
 
@@ -803,27 +818,42 @@ Two concurrent requests must not be able to confirm the same unavailable resourc
 
 # 23. Order State Rules
 
-Order states must be explicit and validated.
-
-Typical flow:
+Order states must be explicit and validated. Every parent Order has one immutable fulfillment type:
 
 ```text
-PAYMENT_PENDING
-    ↓
-PAID
-    ↓
-PENDING_CHEF_ACCEPTANCE
-    ↓
-ACCEPTED
-    ↓
-PREPARING
-    ↓
-READY_FOR_FULFILLMENT
-    ↓
-DELIVERY / PICKUP
-    ↓
-COMPLETED
+PICKUP
+DELIVERY
 ```
+
+Pickup lane:
+
+```text
+PAID
+→ PENDING_CHEF_ACCEPTANCE
+→ ACCEPTED
+→ PREPARING
+→ READY_FOR_FULFILLMENT
+→ PICKED_UP
+→ COMPLETED
+```
+
+Delivery lane:
+
+```text
+PAID
+→ PENDING_CHEF_ACCEPTANCE
+→ ACCEPTED
+→ PREPARING
+→ READY_FOR_FULFILLMENT
+→ DELIVERY_REQUESTED
+→ DRIVER_ASSIGNED
+→ DRIVER_PICKED_UP
+→ OUT_FOR_DELIVERY
+→ DELIVERED
+→ COMPLETED
+```
+
+`PICKED_UP` means completed handoff to the customer or the customer's authorized pickup party only. `DRIVER_PICKED_UP` means the delivery driver has taken possession of a delivery Order. Pickup-only and delivery-only transitions must not cross lanes.
 
 Rejected, cancelled, failed, refunded, and partially refunded paths must be explicitly modeled.
 
@@ -833,29 +863,20 @@ Do not allow arbitrary state transitions.
 
 # 24. ChefOrderGroup State Rules
 
-ChefOrderGroup has its own state machine.
-
-Typical flow:
+ChefOrderGroup has its own preparation state machine:
 
 ```text
-PENDING_ACCEPTANCE
-    ↓
-ACCEPTED
-    ↓
-PREPARING
-    ↓
-READY
+PENDING_ACCEPTANCE → ACCEPTED
+PENDING_ACCEPTANCE → REJECTED
+ACCEPTED → PREPARING
+ACCEPTED → CANCELLED
+PREPARING → READY
+PREPARING → CANCELLED
 ```
 
-Potential terminal/error states may include:
+ChefOrderGroup does not own `PICKED_UP`, `DRIVER_PICKED_UP`, `OUT_FOR_DELIVERY`, `DELIVERED`, or `COMPLETED`. Those are parent Order fulfillment responsibilities.
 
-```text
-REJECTED
-CANCELLED
-REFUNDED
-```
-
-depending on the approved order state model.
+Refund processing is owned by the financial domain and references `chef_order_group_id` where applicable. Refund states are not ChefOrderGroup preparation states; this separation preserves Chef-level refund traceability without making ChefOrderGroup the Refund aggregate owner.
 
 ChefOrderGroup state must not be inferred solely from the parent Order state.
 
@@ -865,23 +886,19 @@ The parent Order and ChefOrderGroup state machines must remain consistent withou
 
 # 25. Delivery State Rules
 
-Delivery is a separate operational concern.
-
-Typical delivery lifecycle:
+Delivery is a separate operational concern coordinated through the parent Order. The delivery fulfillment lane is:
 
 ```text
-DELIVERY_PENDING
-    ↓
-REQUESTED
-    ↓
-DRIVER_ASSIGNED
-    ↓
-PICKED_UP
-    ↓
-OUT_FOR_DELIVERY
-    ↓
-DELIVERED
+READY_FOR_FULFILLMENT
+→ DELIVERY_REQUESTED
+→ DRIVER_ASSIGNED
+→ DRIVER_PICKED_UP
+→ OUT_FOR_DELIVERY
+→ DELIVERED
+→ COMPLETED
 ```
+
+`DRIVER_PICKED_UP` means delivery-driver possession. `PICKED_UP` must not be used for delivery-driver possession.
 
 External delivery providers must be accessed through an adapter interface.
 
@@ -973,21 +990,34 @@ Do not introduce multiple incompatible identifier strategies without an ADR.
 
 # 30. Time and Time Zones
 
-Store timestamps in UTC.
+Timezone modeling follows the repository ADR-011 decision while its ADR status remains governed by `docs/adr/`; ADR-011 remains Proposed until explicitly accepted.
 
-Store business/location timezone identifiers separately.
+Distinguish real instants from business-local schedules:
 
-Never infer the business timezone solely from a browser or client locale.
+- Concrete events that happened or will happen at a specific moment are real instants. Examples include booking occurrence boundaries, order, payment, refund, payout, and delivery timestamps, concrete food-availability occurrences, and event `occurredAt` values.
+- Persist real instants in PostgreSQL as `TIMESTAMPTZ` and use an appropriate instant- or offset-aware application type. PostgreSQL `TIMESTAMPTZ` represents a real instant; it does not preserve the caller's original IANA timezone name or textual offset.
+- Recurring Kitchen operating hours, Chef availability, Kitchen availability, and similar schedule rules use business-local date/time semantics plus an IANA timezone. Do not store recurring schedules only as UTC instants. Resolve and materialize concrete occurrences as real instants for specific dates.
 
-Scheduling calculations must use the business/resource timezone where required.
+The Kitchen timezone is authoritative for Kitchen-based booking, operating-hours, Chef-availability, and similar business rules. Store it as an IANA timezone identifier such as `America/Toronto`; values such as `EST`, `EDT`, or `UTC-5` are not sufficient business timezone identities. A customer, device, or browser timezone may control display but must not override the Kitchen timezone for these rules. Persist a customer-address timezone only when an independently approved business requirement needs it.
 
-Be explicit about:
+API fields representing real instants must contain `Z` or an explicit UTC offset, for example `2026-08-27T15:00:00Z` or `2026-08-27T11:00:00-04:00`. Never silently interpret an offset-free value such as `2026-08-27T11:00:00` as UTC for an instant field. Detailed API representation remains canonical in `docs/04-api-contracts.md`.
 
-- instant
-- local date
-- local time
-- timezone
-- business operating day
+When resolving business-local input in correctness-sensitive booking, order, financial, or similar workflows:
+
+- Reject nonexistent local times in a daylight-saving gap rather than silently shifting them.
+- Reject ambiguous local times in a daylight-saving overlap unless sufficient information identifies the intended offset; do not silently guess an earlier or later offset.
+
+Changing a Kitchen's configured timezone affects future local scheduling semantics but does not rewrite historical or already-materialized real instants. Existing bookings, orders, financial timestamps, and materialized availability occurrences retain their original instants unless an explicit business operation changes them. If auditability requires timezone configuration history or effective dating, model it explicitly rather than rewriting history.
+
+Use Java time types according to their semantics:
+
+- `Instant`: an absolute machine timestamp or real instant.
+- `OffsetDateTime`: a timestamp carrying an explicit offset where API or provider semantics require it.
+- `ZonedDateTime`: a local date/time interpreted in a named `ZoneId` when resolving business schedules.
+- `ZoneId`: the IANA timezone identity.
+- `LocalDate`, `LocalTime`, and `LocalDateTime`: business-local values that are not yet resolved to a real instant.
+
+Do not use `LocalDateTime` as the canonical representation of a resolved cross-system instant, and do not require every layer to expose every Java time type.
 
 ---
 
@@ -1276,7 +1306,13 @@ Every new business capability must include appropriate tests.
 - Chef promotion is evaluated only against that Chef's group.
 - Multiple Chef promotions do not stack.
 - Platform + Chef stacking follows configured rules.
-- Single-use promo codes cannot be reused.
+- The same customer cannot successfully redeem the same customer-entered promo code twice.
+- A `RELEASED` redemption attempt permits that customer to try the code again with a new redemption record.
+- Two different customers may redeem the same code when optional global capacity permits.
+- `max_global_uses = 1` permits only one `RESERVED` or `REDEEMED` redemption globally.
+- Concurrent customers cannot make consuming redemptions exceed `max_global_uses`, and concurrent duplicate claims for one customer/code are rejected.
+- Full or partial refunds do not restore eligibility for a `REDEEMED` code.
+- Automatic promotions apply without creating PromoCodeRedemption records merely because they qualify.
 - Expired promotions fail at checkout.
 - Partial refunds recalculate promotions correctly.
 - Promotion snapshots preserve historical calculations.

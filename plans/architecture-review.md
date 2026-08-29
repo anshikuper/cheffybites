@@ -1,3 +1,31 @@
+# Historical Architecture Review — Superseded
+
+**Status: SUPERSEDED / HISTORICAL ONLY**
+
+This document records an earlier architecture review and planning process. It is retained for historical context and decision provenance only.
+
+**DO NOT use this document as current implementation guidance.** Its ADR numbers, lifecycle state models, schema and financial architecture suggestions, promotion and fulfillment/delivery rules, UUID guidance, implementation phases, dependency mappings, and other recommendations may be obsolete.
+
+Current implementation must follow these canonical repository sources according to their established ownership:
+
+1. [`docs/adr/`](../docs/adr/) — canonical architecture decisions and ADR statuses.
+2. [`AGENTS.md`](../AGENTS.md) — current implementation guidance for coding agents.
+3. [`docs/01-master-spec.md`](../docs/01-master-spec.md) — canonical product and business requirements.
+4. [`docs/02-detailed-architecture.md`](../docs/02-detailed-architecture.md) — integrated architecture overview and cross-domain coordination.
+5. [`docs/03-database-erd.md`](../docs/03-database-erd.md) — canonical persistence and relational model.
+6. [`docs/04-api-contracts.md`](../docs/04-api-contracts.md) — canonical API contracts.
+7. [`docs/05-event-contracts.md`](../docs/05-event-contracts.md) — canonical event contracts.
+
+If this historical document conflicts with any current canonical source, the current canonical source wins. Do not infer current ADR identity or status from numbers in this file, and do not create missing ADRs merely because this file references them. Do not implement lifecycle, schema, UUID, payment, promotion, booking, chat, fulfillment/delivery, event, phase, or dependency behavior directly from this historical plan.
+
+---
+
+## Historical Content Below
+
+The following content is preserved as originally reviewed and may contain superseded decisions.
+
+---
+
 # Cheffy Bites — Architecture Review and Implementation Plan
 
 **Reviewer:** Architect Mode
@@ -419,6 +447,8 @@ The three existing ADRs use `## ADR-001 — …` as both H1 and H2, producing du
 ---
 
 ## 4. Phased Implementation Plan
+
+> **Historical implementation sequence only.** Do not execute these phases without re-deriving the implementation plan from the current canonical ADRs, ERD, API contracts, event contracts, master specification, detailed architecture, and `AGENTS.md`.
 
 The plan is a vertical slice, then horizontal completion. Every step is small enough to review in a single PR.
 

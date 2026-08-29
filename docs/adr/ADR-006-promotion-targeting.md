@@ -4,7 +4,11 @@
 
 Accepted
 
-**Supersedes:** ADR-011 from the original architecture document (Chef-Level Promotion Isolation)
+**Supersedes:** The legacy embedded architecture decision "Chef-Level Promotion Isolation".
+
+## Amendment History
+
+This Accepted ADR was correctively amended to separate promotion ownership from monetary calculation scope. The original wording incorrectly listed `PLATFORM` as an evaluation/calculation scope. `PLATFORM` is a promotion ownership domain; the current food-order calculation scopes are `ITEM`, `CHEF_ORDER_GROUP`, `DELIVERY`, and `ORDER`. This correction does not change the accepted relational targeting design, target types, target relationships, or uniqueness rules.
 
 ## Context
 
@@ -26,14 +30,26 @@ We will create a `PROMOTION_TARGETS` table to explicitly define what each promot
 
 ```sql
 CREATE TABLE promotion.promotion_targets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY,
     promotion_id UUID NOT NULL REFERENCES promotion.promotions(id) ON DELETE CASCADE,
     target_type VARCHAR(20) NOT NULL CHECK (target_type IN ('FOOD_LISTING', 'MENU', 'CHEF_BUSINESS', 'CATEGORY', 'CATEGORY_ALL')),
     target_id UUID NULL, -- NULL for CATEGORY_ALL, otherwise references the specific entity
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(promotion_id, target_type, target_id) -- Prevent duplicate targeting
+    UNIQUE(promotion_id, target_type, target_id), -- Prevent duplicate ordinary targeting rows
+    CHECK (
+        (target_type = 'CATEGORY_ALL' AND target_id IS NULL)
+        OR (target_type <> 'CATEGORY_ALL' AND target_id IS NOT NULL)
+    )
 );
+
+CREATE UNIQUE INDEX uq_promotion_targets_category_all
+    ON promotion.promotion_targets (promotion_id, target_type)
+    WHERE target_type = 'CATEGORY_ALL';
 ```
+
+The application supplies `id` through the repository-approved identifier-generation layer. The persisted database type remains `UUID`; this schema does not prescribe a database-generated random UUID default.
+
+Because PostgreSQL treats `NULL` values as distinct in a normal `UNIQUE` constraint, `UNIQUE(promotion_id, target_type, target_id)` alone does not prevent multiple `CATEGORY_ALL` rows whose `target_id` is `NULL`. The partial unique index ensures that each promotion has at most one `CATEGORY_ALL` targeting row. This model does not use a sentinel UUID and does not require `NULLS NOT DISTINCT`.
 
 ### Target Type Semantics
 
@@ -54,24 +70,39 @@ CREATE TABLE promotion.promotion_targets (
 
 ### Ownership Rules
 
+Promotion ownership and calculation scope are separate concepts. `owner_type` identifies the domain that owns the promotion:
+
+- `CHEF`
+- `PLATFORM`
+- `ENTREPRENEUR`
+
+Neither `CHEF`, `PLATFORM`, nor `ENTREPRENEUR` is a food-order calculation scope.
+
 For **Chef promotions** (promotions created by chefs):
 - The `promotion.owner_id` must equal the `chef_business_id` of the target
 - Engine must reject Chef promotions where `owner_id` ≠ target's `chef_business_id`
 - This prevents chefs from targeting other chefs' food listings or businesses
+- A `CHEF`-owned promotion is evaluated only against that Chef's applicable items and ChefOrderGroup boundaries. This isolation does not prevent compatible promotions belonging to different ChefOrderGroups from coexisting.
 
 For **Platform promotions** (promotions created by the platform/admin):
 - No ownership restrictions apply
 - Can target any combination of entities
+- A `PLATFORM`-owned promotion uses a separately selected supported food-order calculation scope according to its definition. For example, `owner_type = PLATFORM` with `calculation_scope = ORDER` is valid; `calculation_scope = PLATFORM` is invalid.
 
-### Scope and qualifying basis
+For **Entrepreneur promotions**:
+- `ENTREPRENEUR` is an ownership domain, not a food-order calculation scope.
+- Kitchen booking and equipment promotions remain in the booking/rental promotion domain unless a future approved architecture decision integrates them into food-order promotion evaluation.
 
-Promotion evaluation must use explicit scope and qualifying basis values:
+### Calculation Scope and Qualifying Basis
+
+Food-order promotion evaluation must use a `calculation_scope` distinct from `owner_type`. Supported food-order calculation scopes are:
 
 - `ITEM`
 - `CHEF_ORDER_GROUP`
 - `DELIVERY`
 - `ORDER`
-- `PLATFORM`
+
+A promotion owned by `PLATFORM` may calculate over any applicable supported scope, including `ITEM`, `CHEF_ORDER_GROUP`, `DELIVERY`, or `ORDER`, depending on its approved definition. A promotion owned by `CHEF` remains constrained to that Chef's applicable item or ChefOrderGroup boundary. Ownership values must never be stored or interpreted as calculation-scope values.
 
 Qualifying basis values must include:
 

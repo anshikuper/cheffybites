@@ -1,48 +1,67 @@
-# Cheffy Bites — Master Architecture, Technology & AI Development Specification
+# Cheffy Bites — Master Product and Business Specification
 
-**Document:** Master Product + Architecture + Technology Specification  
-**Version:** 1.0  
-**Status:** Architecture Baseline / Development Contract  
-**Audience:** Product owners, software architects, developers, QA, DevOps, AI coding assistants  
-**Primary Goal:** Serve as the single source of truth for architecture design, technology decisions, implementation, and AI-assisted code generation.
+**Document:** Master Product and Business Requirements Specification
+**Version:** 1.0
+**Status:** Product Requirements Baseline
+**Audience:** Product owners, software architects, developers, QA, DevOps, AI coding assistants
+**Primary Goal:** Serve as the canonical source for Cheffy Bites product and business requirements.
 
 ---
 
 # 1. How This Document Must Be Used
 
-This document combines:
+This document is the canonical source for Cheffy Bites product and business requirements.
+
+It contains:
 
 1. Business requirements
 2. Confirmed business rules
 3. Domain model
 4. Functional requirements
-5. Architecture baseline
-6. Recommended technology stack
-7. Data architecture
-8. API and event conventions
-9. Security requirements
-10. Testing requirements
-11. DevOps requirements
-12. AI code-generation contract
-13. Remaining architecture decisions
 
-An AI receiving this document must treat it as the **current source of truth**.
+For architecture, technology, persistence, API, and event representation, refer to the established canonical sources:
 
-When requirements and implementation details conflict, the priority is:
+- Architecture decisions: `docs/adr/` (Accepted ADRs govern architectural decisions)
+- Persistence: `docs/03-database-erd.md`
+- API contracts: `docs/04-api-contracts.md`
+- Event contracts: `docs/05-event-contracts.md`
+- Integrated architecture overview: `docs/02-detailed-architecture.md`
+- Current coding-agent guidance: `AGENTS.md`
 
-```text
-Confirmed Business Rules
-        ↓
-Architecture Rules
-        ↓
-Security / Financial / Data Integrity Rules
-        ↓
-Technology Decisions
-        ↓
-Implementation Details
-```
+Each referenced canonical document is authoritative within its declared scope. Implementation details must conform to the applicable product/business requirements, architecture decisions, persistence contract, API contract, and event contract rather than relying on a global document-precedence order.
 
 Do not introduce a new framework, database, service, dependency, architectural style, or deployment technology merely because it is popular. Any deviation from this specification must be proposed as an Architecture Decision Record (ADR).
+
+---
+
+# 1A. Canonical Document Ownership and Conflict Resolution
+
+This section establishes scope-specific canonical ownership for repository documents. It prevents competing source-of-truth claims without imposing a global linear hierarchy.
+
+## Document Ownership
+
+| Document | Canonical Authority | Scope |
+|----------|---------------------|-------|
+| `docs/adr/` (Accepted ADRs) | **Architecture decisions** | Architectural boundaries, technology choices, integration patterns, data model decisions, concurrency models, security architecture |
+| `docs/01-master-spec.md` | **Product and business requirements** | Business rules, domain model, functional requirements, user experiences, product scope |
+| `docs/02-detailed-architecture.md` | **Integrated architecture overview** | Cross-cutting architecture view, component diagrams, deployment, infrastructure |
+| `docs/03-database-erd.md` | **Persistence model** | Schema, tables, relationships, constraints, indexes |
+| `docs/04-api-contracts.md` | **API contracts** | REST endpoints, request/response schemas, error contracts |
+| `docs/05-event-contracts.md` | **Event contracts** | Event types, payloads, versioning, outbox patterns |
+| `AGENTS.md` | **Coding-agent implementation guidance** | Workflow rules, module boundaries, testing requirements, prohibited behaviors |
+| `plans/architecture-review.md` | **Historical / superseded** | Reference only; does not govern current decisions |
+
+## Conflict Resolution
+
+Each canonical document is authoritative within the scope declared above. An Accepted ADR governs the architecture decision it records; the specialized canonical documents express that decision within their respective persistence, API, and event representation scopes. The integrated architecture explains and coordinates those representations but does not override them.
+
+**Rules:**
+
+1. **Accepted ADRs govern architecture.** No document may override an Accepted ADR without a new ADR.
+2. **This document (01-master-spec.md) governs product/business requirements.** It does not govern architecture, technology, persistence, API, or event representation.
+3. **Proposed ADRs are not authoritative.** They represent proposals under review and must not be treated as finalized.
+4. **Specialized contracts govern their representation scopes.** `docs/03-database-erd.md` governs exact persistence, `docs/04-api-contracts.md` governs exact APIs, and `docs/05-event-contracts.md` governs exact events.
+5. **If a conflict is found:** Do not silently choose a purportedly higher document or invent a reconciliation. Stop implementation of the conflicting area, identify the conflict and impact, reconcile the owning canonical documents or ADR explicitly, and wait for approval before implementing.
 
 ---
 
@@ -504,9 +523,9 @@ Entrepreneurs can configure:
 - Cleaning duration.
 - Additional equipment rates.
 
-The availability engine must be timezone-aware.
+The availability engine must distinguish recurring business-local schedules from concrete occurrences. Kitchen operating hours, recurring Kitchen availability, and recurring Chef availability use local date/time semantics plus the Kitchen's IANA timezone. Concrete occurrences for specific dates are resolved under that timezone's rules and materialized as real instants.
 
-Store timestamps in UTC and maintain the applicable location timezone for business scheduling.
+The Kitchen timezone is authoritative for Kitchen booking, operating-hours, Chef-availability, and similar Kitchen-based rules. Store an IANA identifier such as `America/Toronto`, not only `EST`, `EDT`, or `UTC-5`. Customer, device, and browser timezones may affect display but do not override the Kitchen timezone for these rules.
 
 ---
 
@@ -766,11 +785,15 @@ It exists because:
 - Chef payout is independent.
 - Chef-specific cancellation/refund effects may occur.
 
+ChefOrderGroup owns Chef preparation responsibility and Chef-level operational traceability. The parent Order owns customer pickup, delivery, and final completion. Refunds are financial facts that may reference the affected ChefOrderGroup where applicable; refund states are not ChefOrderGroup operational states.
+
 ---
 
 # 18. Order Lifecycle
 
 ## 18.1 Overall Order
+
+Every parent Order has one immutable fulfillment type: `PICKUP` or `DELIVERY`.
 
 ```text
 CART
@@ -792,7 +815,7 @@ PENDING_CHEF_ACCEPTANCE
   │                         ↓
   │                    DRIVER_ASSIGNED
   │                         ↓
-  │                      PICKED_UP
+  │                 DRIVER_PICKED_UP
   │                         ↓
   │                   OUT_FOR_DELIVERY
   │                         ↓
@@ -802,6 +825,8 @@ PENDING_CHEF_ACCEPTANCE
   │
   └── REJECTED → REFUND_PENDING → REFUNDED
 ```
+
+`PICKED_UP` means completed handoff to the customer or the customer's authorized pickup party only. `DRIVER_PICKED_UP` means the delivery driver has taken possession of a delivery Order. Pickup-only and delivery-only transitions must not cross lanes.
 
 Possible terminal states:
 
@@ -829,13 +854,15 @@ READY
 
 The overall Kitchen Order should not be considered ready for handoff until the required Chef Groups are ready.
 
+ChefOrderGroup owns preparation through `READY`; customer pickup, delivery possession, delivery progress, and final completion remain parent Order responsibilities. Refund processing remains a financial workflow with ChefOrderGroup references where applicable, not an extension of the ChefOrderGroup preparation lifecycle.
+
 ---
 
 # 19. Delivery
 
 ## 19.1 One Delivery Per Kitchen Order
 
-A delivery fee is calculated for the Kitchen Order, not per Chef.
+A delivery fee is calculated for the Kitchen Order, not per Chef. The quoted/captured delivery amount is immutable commercial Pricing evidence; it is not settlement truth. The resulting delivery obligation is represented through PaymentAllocation and balanced ledger posting where applicable.
 
 ```text
 Kitchen A Order
@@ -876,12 +903,14 @@ DELIVERY_REQUESTED
  ↓
 DRIVER_ASSIGNED
  ↓
-PICKED_UP
+DRIVER_PICKED_UP
  ↓
 OUT_FOR_DELIVERY
  ↓
 DELIVERED
 ```
+
+`DRIVER_PICKED_UP` means delivery-driver possession. `PICKED_UP` is reserved for customer or authorized-party pickup of a `PICKUP` Order and must not be used in the delivery lifecycle.
 
 The Chef and Customer should see the appropriate current status.
 
@@ -955,14 +984,16 @@ Confirmed rules:
 2. Item-level promotions may coexist when they affect different eligible items or non-overlapping scopes.
 3. Group-level promotions only conflict when they target the same qualifying basis or exclusive scope.
 4. Platform promotions can stack with Chef promotions when the scopes are compatible.
-5. A customer may use only one promo code per transaction.
-6. A promo code is single-use.
+5. A customer may enter/apply at most one promo code per Order checkout.
+6. A specific customer may successfully redeem a specific promo code at most once. A failed or released checkout reservation does not consume permanent eligibility, but a completed redemption remains used after full or partial refund.
 7. A promotion can target multiple food items.
 8. A promotion can target an entire Chef menu.
 9. An Entrepreneur promotion may apply to equipment rental.
 10. Platform promo codes may be restricted to specific users/segments.
 11. An expired promotion is invalid at checkout even if an item was previously added to the cart.
 12. After a partial refund, promotion eligibility must be recalculated from the original snapshot.
+
+A promo code may optionally define a global redemption cap. No configured cap means globally unlimited use subject to one successful redemption per customer; a cap of one defines a globally one-time code. Automatic promotions do not consume promo-code redemptions merely because they apply.
 
 Promotion conflict resolution is not controlled by a single global `stackable` flag.
 
@@ -1281,9 +1312,9 @@ A single Order can have:
 
 ## 33.2 Marketplace Payment Requirement
 
-A single Kitchen Order may contain items from multiple Chefs, so the payment system must support one customer payment with allocation to multiple sellers/connected accounts.
+A single Kitchen Order may contain items from multiple Chefs, so the payment system must support one logical customer Payment with multiple internal allocations across approved obligations and recipients. Internal PaymentAllocation is Cheffy Bites' authoritative logical distribution; it is not proof of a provider transfer to a connected account.
 
-The operational/payment architecture is centralized marketplace checkout with automated allocation and provider-managed payouts. The final legal Merchant-of-Record decision remains subject to legal/accounting validation. Stripe Connect is a likely provider baseline, not a finalized legal posture. Stripe documents Connect specifically for marketplaces that collect customer payments and pay multiple sellers/service providers, including application fees and payouts. citeturn201369search0turn201369search1
+The operational/payment architecture is centralized marketplace checkout with automated internal allocation and automated provider-assisted or provider-managed payout workflows. External connected-account transfer topology is a separate settlement concern. Merchant-of-Record, tax/remittance responsibility, chargeback liability, refund liability, connected-account topology, reserves, negative balances, country-specific settlement/risk rules, and related marketplace legal posture remain unresolved pending legal/accounting/provider validation. Stripe Connect is a likely provider baseline, not a finalized legal posture. Stripe documents Connect specifically for marketplaces that collect customer payments and pay multiple sellers/service providers, including application fees and payouts. citeturn201369search0turn201369search1
 
 ## 33.3 Payment Lifecycle
 
@@ -1321,7 +1352,9 @@ PaymentGateway
 
 Do not store raw card numbers or CVV data in Cheffy Bites systems.
 
-Stripe Connect can automate connected-account onboarding, payment routing, payouts, platform fees, refunds, and other marketplace workflows, but Cheffy Bites still owns allocation rules, refund redistribution, ledger truth, and reconciliation.
+Stripe Connect can automate connected-account onboarding, payment routing, payouts, platform fees, refunds, and other marketplace workflows, but it is a provider adapter rather than the Cheffy Bites financial domain model. Cheffy Bites still owns allocation rules, refund redistribution, ledger truth, and reconciliation.
+
+The provider-neutral `PaymentGateway` returns a Cheffy `PaymentInitiationResult` for initiation. This result may carry a generic provider payment reference and required client action evidence; it is not a Stripe PaymentIntent or the Cheffy Payment aggregate. Provider payment references remain generic integration references.
 
 ---
 
@@ -1375,7 +1408,7 @@ Chef payouts must be derived from immutable transaction line items.
 
 Chef payouts must be derived from immutable payment allocation and ledger entries tied back to the originating ChefOrderGroup.
 
-Delivery settlement and platform fees are separate allocation lines, not ad hoc calculations.
+Delivery settlement obligations and platform fees are separate PaymentAllocation and ledger facts, not ad hoc calculations. FeeLineItem and TaxLineItem remain immutable Pricing/Tax calculation evidence; they are not settlement facts and must not be reconstructed from current configuration.
 
 ---
 
@@ -1536,7 +1569,7 @@ The architecture must support:
 
 For an initial Canadian rollout, the system must be capable of handling applicable GST/QST and future provincial/country rules. Final tax treatment requires legal/accounting validation.
 
-Stripe provides Stripe Tax integration for Connect marketplace flows, which should be evaluated as the initial tax-engine option. citeturn201369search1
+Stripe provides Stripe Tax integration for Connect marketplace flows, which should be evaluated as the initial tax-engine option. Stripe Tax or another tax provider remains an adapter/evidence source, not the Tax domain model or Cheffy financial system of record. citeturn201369search1
 
 ---
 
@@ -1581,27 +1614,30 @@ Conceptual records:
 ```text
 Payment
 PaymentAttempt
-PaymentTransaction
+PaymentAllocation
+ProviderEvent
+IdempotencyKey
 Refund
-RefundTransaction
+RefundLine
 PromotionApplication
 FeeLineItem
 TaxLineItem
 Payout
-PayoutLineItem
+PayoutLine
+LedgerTransaction
 LedgerEntry
 FinancialAdjustment
-PaymentAllocation
-RefundLine
 PromotionSnapshot
-FinancialSnapshot
+PricingSnapshot
 ```
 
-The final database design may use fewer/more physical tables, but the business concepts must be preserved.
+These are business concepts, not an independent physical table prescription. PricingSnapshot is the one pricing-owned immutable commercial calculation snapshot; there is no separate FinancialSnapshot concept. FeeLineItem and TaxLineItem remain Pricing/Tax evidence. Settled allocation, payout, refund, and accounting facts remain Financial-domain records. Their canonical persistence representation is governed by the applicable ADRs and `docs/03-database-erd.md`.
+
+LedgerTransaction is the posting/finalization header for LedgerEntries. One transaction owns one currency, transitions only from `DRAFT` to terminal `POSTED`, and must be database-validated as balanced before posting. Posted history is immutable; corrections create new balanced compensating transactions.
 
 ---
 
-# 45. Order Financial Snapshot
+# 45. Order Pricing Snapshot
 
 At checkout, store a complete commercial snapshot:
 
@@ -1685,7 +1721,7 @@ Do not extract them prematurely.
 
 # 47. Recommended Technology Stack
 
-This is the **baseline technology decision** for implementation unless an ADR changes it.
+This is the **recommended technology baseline** for implementation unless an ADR changes it.
 
 ## Frontend Web
 
@@ -2031,35 +2067,17 @@ Use PostgreSQL as the system of record.
 
 Use logical domain ownership inside the same database initially.
 
-Potential schema/domain groups:
+Logical business capabilities remain distinct. They include identity, organization, kitchen, booking, equipment, chef, catalog, food, customer, cart, orders, promotion, pricing, payment, refund, tax, payout, settlement, delivery, notification, chat, review, food request, and audit.
+
+Logical capability names do not independently prescribe physical PostgreSQL schemas. Physical persistence is governed by the applicable architecture decisions under `docs/adr/` and the canonical relational model in `docs/03-database-erd.md`.
+
+The current architecture represented by ADR-012 and ADR-015 uses one canonical financial persistence schema:
 
 ```text
-identity
-organization
-kitchen
-booking
-equipment
-chef
-catalog
-food
-customer
-cart
-orders
-promotion
-pricing
-payment
-refund
-tax
-payout
-delivery
-notification
-chat
-review
-food_request
-audit
+financial.*
 ```
 
-Whether these become actual PostgreSQL schemas or table prefixes can be decided during implementation, but domain ownership must be clear.
+There must not be a competing `payment.*` persistence schema. This statement records the architecture currently represented by those ADRs without changing their status; each standalone ADR file remains authoritative for its own status and decision. Product capabilities such as payment, refund, tax, payout, and settlement remain logically distinct within the canonical financial persistence model.
 
 ---
 
@@ -2115,19 +2133,22 @@ PromotionRule
 PromotionTarget
 PromotionApplication
 PromoCode
-PromotionUsage
+PromoCodeRedemption
 PricingSnapshot
 
 Payment
 PaymentAttempt
-PaymentTransaction
+PaymentAllocation
+ProviderEvent
+IdempotencyKey
 Refund
-RefundTransaction
+RefundLine
 
 FeeLineItem
 TaxLineItem
 Payout
-PayoutLineItem
+PayoutLine
+LedgerTransaction
 LedgerEntry
 FinancialAdjustment
 
@@ -2152,7 +2173,7 @@ NotificationPreference
 AuditLog
 ```
 
-The physical model may be normalized/optimized during database design.
+These are conceptual business entities. Their physical persistence representation is governed by the applicable ADRs and the canonical model in `docs/03-database-erd.md`; this master specification does not independently redefine that model.
 
 ---
 
@@ -2181,9 +2202,22 @@ Use UUID/UUIDv7 or another time-sortable unique identifier strategy consistently
 
 ## Dates
 
-- Store timestamps in UTC.
-- Store local timezone identifiers for locations/businesses.
-- Never infer timezone from browser locale alone.
+Timezone modeling follows the repository ADR-011 decision while its ADR status remains governed by `docs/adr/`; ADR-011 remains Proposed until explicitly accepted.
+
+Distinguish two kinds of time data:
+
+- **Real instants:** Concrete events that happened or will happen at a specific moment. Booking occurrence start/end, payment, refund, payout, order, delivery, and event `occurredAt` timestamps, plus concrete food-availability occurrences, are real instants. Persist these in PostgreSQL as `TIMESTAMPTZ` and use an appropriate instant- or offset-aware application representation.
+- **Business-local schedules:** Recurring Kitchen operating hours, recurring Chef or Kitchen availability, and similar schedule rules use local date/time semantics plus an IANA timezone. They must not be stored only as UTC instants. Materialize a concrete occurrence into a real instant for its specific date.
+
+PostgreSQL `TIMESTAMPTZ` represents a real instant. It does not preserve the original IANA timezone name or original textual offset, so store the authoritative business IANA timezone separately wherever business-local interpretation is required.
+
+The Kitchen's IANA timezone, for example `America/Toronto`, is authoritative for Kitchen-based business rules. Abbreviations or fixed offsets such as `EST`, `EDT`, and `UTC-5` do not identify the complete business timezone rules. Never infer or override this timezone from a customer, browser, or device locale. A customer-address timezone should exist only for an independently approved business requirement.
+
+API fields representing real instants require `Z` or an explicit UTC offset, for example `2026-08-27T15:00:00Z` or `2026-08-27T11:00:00-04:00`. An offset-free value such as `2026-08-27T11:00:00` must not be silently interpreted as UTC for an instant field. Detailed API representation remains canonical in `docs/04-api-contracts.md`.
+
+For booking, order, financial, or other correctness-sensitive workflows, do not silently shift a nonexistent local time during a daylight-saving gap. Do not silently guess an earlier or later offset for an ambiguous local time during a daylight-saving overlap. Require sufficient information to identify the intended instant or reject the ambiguous/nonexistent input according to ADR-011.
+
+Changing a Kitchen's configured timezone does not rewrite historical or already-materialized real instants. Existing bookings, orders, financial timestamps, and materialized availability occurrences retain their original instants unless explicitly changed by an approved business operation. Timezone configuration history or effective dating may be modeled explicitly if auditability requires it; this rule does not require such a model by default.
 
 ## Soft Delete
 
@@ -2423,7 +2457,7 @@ Use an asynchronous worker.
 
 Use domain/integration events selectively.
 
-Examples:
+The following is a high-level, unversioned business-event catalogue:
 
 ```text
 OrderCreated
@@ -2431,12 +2465,14 @@ PaymentSucceeded
 OrderAccepted
 OrderRejected
 OrderPreparing
-OrderReady
+OrderReadyForFulfillment
 DeliveryRequested
 DriverAssigned
 OrderPickedUp
+DriverPickedUp
 OrderOutForDelivery
 OrderDelivered
+OrderCompleted
 OrderCancelled
 RefundProcessed
 PayoutCreated
@@ -2449,6 +2485,10 @@ FoodRequestCreated
 FoodRequestFulfilled
 FoodPublished
 ```
+
+`OrderPickedUp` means that the customer or authorized pickup party has picked up a `PICKUP` Order. `DriverPickedUp` means that a delivery driver has taken possession of a `DELIVERY` Order. One pickup event must not represent both business meanings.
+
+Exact versioned event names, envelopes, payload semantics, and compatibility requirements are governed by `docs/05-event-contracts.md`. Event versioning rules are governed by ADR-016. Architecture decisions and their statuses are governed by the standalone files under `docs/adr/`.
 
 Use a transactional outbox so database changes and event publication are reliable.
 
@@ -2657,11 +2697,17 @@ Two valid promo codes
 → only one promo code may be applied.
 ```
 
-### Single-Use Code
+### Per-Customer Promo-Code Redemption
 
 ```text
-Promo code successfully used once
-→ second successful use is rejected.
+Same customer successfully redeems the same promo code once
+→ that customer's second successful redemption is rejected.
+
+Released checkout reservation
+→ customer may try again.
+
+Completed redemption followed by full or partial refund
+→ redemption remains used.
 ```
 
 ### Booking
@@ -3358,7 +3404,7 @@ A Chef Order Group belongs to exactly one order and one Chef.
 
 A kitchen space cannot have overlapping confirmed occupancy.
 
-A single-use promo code cannot be successfully redeemed twice.
+A customer cannot successfully redeem the same promo code twice; an optional global cap may further limit total redemptions.
 ```
 
 Where complex temporal constraints cannot be expressed simply in the schema, use transaction-safe application logic plus appropriate locking.
@@ -3398,7 +3444,7 @@ Discount line items
 Eligibility reasons
 ```
 
-The final Order must store the applied financial snapshot.
+The final Order must store the applied/captured PricingSnapshot as immutable commercial calculation evidence.
 
 ---
 
@@ -3616,9 +3662,13 @@ The following are intentionally not invented in this document and must be finali
 
 ---
 
-# 101. Current Architecture Baseline
+# 101. Current Product and Technology Baseline
 
-Unless an ADR changes it, the baseline is:
+This section describes the current product, technology, and architecture **direction** for Cheffy Bites. It does not by itself constitute formal acceptance of any architecture decision.
+
+**Architecture decision status is governed by the ADRs in `docs/adr/`.** Only ADRs marked **Accepted** are authoritative for architecture; ADRs marked **Proposed** are under review and must not be treated as finalized.
+
+Unless an Accepted ADR changes it, the current product and technology baseline is:
 
 ```text
 WEB
@@ -3724,9 +3774,9 @@ When sharing this document with an architecture-capable AI, use the following in
 
 > Act as the Principal Architect for Cheffy Bites.
 >
-> Treat this document as the current source of truth.
+> This document defines product and business requirements. For architecture, technology, persistence, API, and event representation, refer to the established canonical sources listed in [Section 1](docs/01-master-spec.md#1-how-this-document-must-be-used).
 >
-> Review the architecture baseline critically rather than agreeing automatically.
+> Review the product requirements and architecture direction critically rather than agreeing automatically.
 >
 > Validate the business domains, transactional boundaries, concurrency model, security model, payment/payout architecture, geospatial design, delivery integration, and promotion engine.
 >
@@ -3763,6 +3813,8 @@ When sharing this document with an architecture-capable AI, use the following in
 When the architecture is approved and code generation begins, use the following instruction:
 
 > Act as a Staff/Principal Software Engineer implementing Cheffy Bites according to this specification.
+>
+> **Scope-specific document ownership:** This document defines product and business requirements. Accepted ADRs in `docs/adr/` govern the architecture decisions they record. `docs/03-database-erd.md` governs exact persistence, `docs/04-api-contracts.md` governs exact APIs, `docs/05-event-contracts.md` governs exact events, and `docs/02-detailed-architecture.md` governs integrated architecture and cross-domain coordination. `AGENTS.md` provides implementation guidance and does not override canonical sources.
 >
 > Never invent business rules.
 >
@@ -3866,8 +3918,8 @@ The Cheffy Bites architecture must follow these principles:
 4. **Chef A and Chef B are independent promotion domains; their promotions may coexist.**
 5. **Promotion compatibility is resolved by scope, compatibility, exclusivity, priority, savings, and a deterministic tie-breaker. There is no blanket global `stackable` flag.**
 6. **Platform promotions may stack with Chef promotions according to the resolved compatibility model.**
-7. **Only one promo code is allowed per transaction.**
-8. **Promo codes are single-use.**
+7. **At most one customer-entered promo code is allowed per Order checkout.**
+8. **Each customer may successfully redeem a specific promo code at most once; an optional global cap controls total redemptions, and refunds do not restore eligibility.**
 9. **Promotion evaluation is authoritative on the backend and is performed per ChefOrderGroup.**
 10. **Payments, refunds, fees, taxes, and payouts are separate financial concepts.**
 11. **Financial history is immutable/auditable (append-only ledger, snapshot-preserved promotion and financial history).**
@@ -3943,7 +3995,7 @@ The Cheffy Bites architecture must follow these principles:
              └────────────┘                          └─────────────┘ └──────────┘
 ```
 
-This is the baseline architecture to refine through ADRs and then implement incrementally.
+This is the recommended architecture to refine through ADRs and then implement incrementally.
 
 ---
 
@@ -3969,13 +4021,13 @@ The technology recommendations in this document should be verified against offic
 
 # 110. Document Status
 
-This document is the **current master specification**.
+This document is the **current product and business specification**.
 
-Business requirements are substantially defined.
+Product and business requirements are substantially defined.
 
-Technology stack has a recommended baseline.
+Technology stack has a recommended baseline (subject to ADR governance).
 
-Architecture is intentionally designed as a **modular monolith with event-driven integration**, subject to ADR review.
+Architecture is intentionally designed as a **modular monolith with event-driven integration**, governed by ADR review and acceptance.
 
 The remaining work before production implementation is:
 
@@ -3990,4 +4042,4 @@ The remaining work before production implementation is:
 9. Freeze MVP scope.
 10. Begin vertical-slice implementation.
 
-**No AI-generated production code should override these principles without an explicit architectural decision.**
+**No AI-generated production code should override these principles or the established scope-specific canonical ownership without an explicit approved change to the owning business requirement, canonical contract, or architecture decision.**

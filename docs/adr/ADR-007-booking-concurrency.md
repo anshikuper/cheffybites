@@ -4,6 +4,10 @@
 
 Accepted
 
+## Amendment History
+
+The equipment-concurrency portion was correctively amended after review found that the original aggregate `SUM`-plus-`INSERT` algorithm was not serialized under PostgreSQL `READ COMMITTED`. A transaction containing only capacity read, overlap sum, comparison, and allocation insert can race with another transaction performing the same sequence. This amendment replaces that defective equipment-capacity design with row-level serialization on the authoritative EquipmentRental resource. The accepted Kitchen Space GiST exclusion design is unchanged.
+
 ## Context
 
 Kitchen spaces are time-based resources that must prevent double-booking. The system needs to ensure that a kitchen space cannot be booked for overlapping time periods, even when multiple chefs try to book simultaneously.
@@ -51,79 +55,75 @@ ALTER TABLE kitchen.kitchen_bookings
 
 ### Equipment Booking Concurrency
 
-Equipment has quantity limits, requiring a different approach using allocations:
+Equipment has quantity limits, requiring allocation records and explicit serialization on a stable authoritative inventory resource. PostgreSQL does not provide a simple `CHECK` or GiST exclusion constraint that directly enforces a sum of overlapping quantities less than or equal to a capacity greater than one.
 
-```sql
--- Equipment bookings track the request
-CREATE TABLE equipment.equipment_bookings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    kitchen_booking_id UUID NOT NULL REFERENCES kitchen.kitchen_bookings(id),
-    equipment_id UUID NOT NULL REFERENCES equipment.master_equipment(id),
-    quantity INT NOT NULL CHECK (quantity > 0),
-    status VARCHAR(20) NOT NULL DEFAULT 'RESERVED',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+#### Equipment Inventory Model
 
--- Equipment allocations track confirmed quantities per time slot
-CREATE TABLE equipment.equipment_allocations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    equipment_id UUID NOT NULL REFERENCES equipment.master_equipment(id),
-    kitchen_space_id UUID NOT NULL REFERENCES kitchen.kitchen_spaces(id),
-    start_at TIMESTAMPTZ NOT NULL,
-    end_at TIMESTAMPTZ NOT NULL,
-    quantity INT NOT NULL CHECK (quantity > 0),
-    kitchen_booking_id UUID NOT NULL REFERENCES kitchen.kitchen_bookings(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+- `EquipmentCatalogItem` is the reusable equipment type/catalog definition.
+- `SpaceEquipment` associates equipment with a specific Kitchen Space and primarily represents baseline/included equipment assignment.
+- `EquipmentRental` is the current rentable inventory offer for one Kitchen Space. It references one EquipmentCatalogItem and owns price, currency, lifecycle/status, and the authoritative `quantity_available`.
+- `equipment_rentals.id`, exposed to the API as `equipmentRentalId`, is the stable resource and serialization key for additional equipment rental.
+- `EquipmentBooking` is a booking request/line for an EquipmentRental and references `equipment_rental_id`.
+- `EquipmentAllocation` is committed capacity consumption for an EquipmentRental associated with a KitchenBooking and references `equipment_rental_id` and `kitchen_booking_id`.
+
+Kitchen Space ownership is determined through `EquipmentRental.kitchen_space_id`. An implementation does not need a redundant `kitchen_space_id` on EquipmentAllocation. If one is retained, database integrity must guarantee that it matches the EquipmentRental's Kitchen Space.
+
+The master equipment catalog is not reservable inventory, and `MASTER_EQUIPMENT` is not the capacity source or lock target. The current model is per Kitchen Space and does not imply a shared Kitchen-wide pool. Equipment shared across multiple Spaces requires a separate approved business and architecture model.
+
+#### Row-Level Serialization
+
+A plain capacity read, overlapping-allocation `SUM`, comparison, and `INSERT` is unsafe under PostgreSQL `READ COMMITTED`, even when the sequence is wrapped in one transaction. Concurrent transactions can observe the same committed allocation state and both insert unless they first serialize on a shared authoritative row.
+
+The primary equipment-reservation strategy is therefore:
+
+1. Determine all requested `equipment_rental_id` values.
+2. Sort the identifiers in deterministic order.
+3. Acquire PostgreSQL row locks equivalent to `SELECT ... FOR UPDATE` on every corresponding EquipmentRental row, in that order.
+4. Only after all required locks are acquired, validate every requested resource and capacity.
+
+While holding each EquipmentRental row lock, the transaction must:
+
+1. Validate that the rental is active/reservable.
+2. Validate that it belongs to the Kitchen Space being booked.
+3. Read its authoritative `quantity_available`.
+4. Calculate capacity-consuming EquipmentAllocations for the same `equipment_rental_id` whose half-open intervals overlap the requested interval.
+5. Reject when existing overlapping allocated quantity plus requested quantity exceeds `quantity_available`.
+6. Otherwise create the EquipmentAllocation.
+
+The overlap calculation must occur after lock acquisition. A result read before the lock must not be reused. Transactions competing for the same EquipmentRental wait on the same row; after acquiring it, a waiting transaction recalculates against the latest committed state. Transactions for different EquipmentRental rows do not serialize on one shared equipment lock.
+
+Deterministic multi-resource lock ordering minimizes application-created deadlock cycles but does not make deadlocks impossible. Normal row-lock waiting is expected serialization behavior, not an error or retry condition. A bounded internal retry may handle a PostgreSQL deadlock error according to normal infrastructure policy while preserving request idempotency.
+
+#### Equipment Interval and Capacity-Reserving States
+
+The equipment capacity-consuming interval is the Kitchen Booking's complete half-open occupancy interval:
+
+```text
+[booking.start_at, booking.occupancy_end_at)
 ```
 
-**Concurrency Control for Equipment:**
-```sql
--- Function to check and reserve equipment atomically
-CREATE OR REPLACE FUNCTION equipment.reserve_equipment(
-    p_equipment_id UUID,
-    p_kitchen_space_id UUID,
-    p_start_at TIMESTAMPTZ,
-    p_end_at TIMESTAMPTZ,
-    p_quantity INT,
-    p_kitchen_booking_id UUID
-) RETURNS BOOLEAN AS $$
-DECLARE
-    v_allocated INT;
-    v_available INT;
-    v_max_quantity INT;
-BEGIN
-    -- Get max quantity for equipment
-    SELECT quantity INTO v_max_quantity
-    FROM equipment.master_equipment
-    WHERE id = p_equipment_id;
+It includes mandatory cleaning occupancy. The current product and API do not select an independent equipment-rental interval. Such an interval would require a separate approved product and API decision.
 
-    -- Calculate already allocated quantity for overlapping time
-    SELECT COALESCE(SUM(ea.quantity), 0) INTO v_allocated
-    FROM equipment.equipment_allocations ea
-    WHERE ea.equipment_id = p_equipment_id
-      AND ea.kitchen_space_id = p_kitchen_space_id
-      AND tstzrange(ea.start_at, ea.end_at, '[)') &&
-         tstzrange(p_start_at, p_end_at, '[)');
+`HELD` and `CONFIRMED` Kitchen Bookings reserve equipment capacity, consistent with the Kitchen Space occupancy rule. A HELD booking therefore consumes the required equipment capacity. When a HELD booking expires, or a booking is cancelled, its allocations must cease to count as active capacity according to the booking/allocation lifecycle.
 
-    v_available := v_max_quantity - v_allocated;
+#### Atomic Reservation Transaction
 
-    IF v_available < p_quantity THEN
-        RETURN FALSE; -- Not enough equipment available
-    END IF;
+For a reservation requiring equipment, one local PostgreSQL transaction must:
 
-    -- Reserve the equipment
-    INSERT INTO equipment.equipment_allocations (
-        equipment_id, kitchen_space_id, start_at, end_at, quantity, kitchen_booking_id
-    ) VALUES (
-        p_equipment_id, p_kitchen_space_id, p_start_at, p_end_at, p_quantity, p_kitchen_booking_id
-    );
+1. Acquire all requested EquipmentRental row locks in deterministic identifier order.
+2. Validate rental ownership and lifecycle/status.
+3. Calculate overlapping capacity-consuming allocations after locking.
+4. Validate all requested equipment quantities before committing any requested resource.
+5. Create or transition EquipmentBooking line records to their capacity-consuming state, as applicable.
+6. Create all required EquipmentAllocations.
+7. Create or transition the KitchenBooking to `HELD` or `CONFIRMED` when that transition establishes the reservation.
+8. Commit the complete reservation together.
 
-    RETURN TRUE;
-END;
-$$ LANGUAGE plpgsql;
-```
+If any capacity check fails, the reservation attempt is rejected. No partial EquipmentAllocation, partial capacity-consuming EquipmentBooking state, or associated `HELD`/`CONFIRMED` KitchenBooking transition may commit. This is one local database transaction; no distributed transaction is introduced.
+
+Quotes are informational and non-authoritative and do not reserve equipment capacity. An EquipmentBooking request row may precede allocation only when its state is explicitly non-reserving; this ADR does not add a new status name. Capacity is guaranteed only after the locking, validation, allocation, and booking-transition transaction commits.
+
+Normal API/request idempotency semantics apply so retries do not create duplicate bookings or allocations. `SERIALIZABLE` transactions with mandatory retry are a technically valid alternative, but they are not the primary strategy. Advisory locks are not the default.
 
 ### Cleaning Time Blocks
 
@@ -142,14 +142,14 @@ occupancy_end_at: 12:30 (space available for next booking)
 ### Positive
 - Database-level guarantee of no double-booking (not just application-level check)
 - GiST index is efficient for range queries
-- Atomic reservation via PostgreSQL constraints
-- Equipment allocation function is atomic and prevents race conditions
+- Equipment reservations competing for the same EquipmentRental serialize on one authoritative relational row
+- Equipment capacity validation and all requested allocations commit atomically with the capacity-reserving booking transition
 - Cleaning time is explicitly modeled
 
 ### Negative
 - Requires `btree_gist` extension
 - Generated column adds storage overhead
-- Equipment reservation function requires careful transaction management
+- Equipment reservation requires deterministic row-lock ordering and careful transaction management
 - Complex to modify booking times (may need to cancel and rebook)
 - Booking holds must expire deterministically; do not rely on advisory locks unless load testing later proves they are necessary.
 
@@ -157,22 +157,39 @@ occupancy_end_at: 12:30 (space available for next booking)
 
 - Add `btree_gist` to database initialization script
 - Add Flyway migration for `occupancy_range` column and EXCLUDE constraint
-- Add `equipment_bookings` and `equipment_allocations` tables
-- Implement `reserve_equipment` function
+- Model EquipmentBooking and EquipmentAllocation references with `equipment_rental_id`
+- Implement EquipmentRental row locking, post-lock overlap calculation, and all-or-nothing allocation
+- Acquire multiple EquipmentRental locks in deterministic identifier order
 - Update kitchen booking service to calculate `occupancy_end_at` including cleaning time
 - Model booking holds with `status = HELD` and a `hold_expires_at` field on the booking row
 - Add API endpoint for checking equipment availability
-- Handle constraint violations gracefully in application code
+- Treat availability responses and quotes as non-authoritative until the reservation transaction commits
+- Handle capacity conflicts, constraint violations, idempotent retries, and bounded internal deadlock retries gracefully
+
+## Concurrency Test Requirements
+
+Future integration tests must use real PostgreSQL, such as through Testcontainers, with independent concurrent transactions and assertions against committed state. At minimum, verify:
+
+1. Capacity 1 with two concurrent overlapping reservations for the same EquipmentRental allows exactly one to succeed.
+2. Capacity N with concurrent requests exceeding N never commits overlapping allocations whose sum exceeds N.
+3. Non-overlapping intervals for the same EquipmentRental may both succeed.
+4. Requests for different EquipmentRental rows do not unnecessarily serialize each other.
+5. A failed or rolled-back transaction consumes no capacity.
+6. A waiting transaction recalculates availability after acquiring the row lock.
+7. A request for multiple EquipmentRentals uses deterministic lock ordering and commits allocations all-or-nothing.
+8. An EquipmentRental belonging to a different Kitchen Space is rejected.
+9. An overlap only within mandatory cleaning occupancy still conflicts.
+10. An idempotent retry creates no duplicate allocation.
 
 ## Alternatives Considered
 
-1. **Application-level locking with `SELECT ... FOR UPDATE`**
-   - Rejected: Race condition window between check and insert
-   - PostgreSQL constraint is atomic and guaranteed
+1. **Unlocked application availability check followed by a write**
+   - Rejected: checking availability without locking a shared authoritative row leaves a race window before allocation.
+   - The current safe design instead uses one database transaction that locks each authoritative EquipmentRental row before calculating overlapping allocation quantity and inserting allocations.
 
 2. **Redis for booking locks**
    - Rejected: Redis is not authoritative for transactional data
-   -违反 "backend is authoritative" principle
+   - Violates the backend-authoritative principle
 
 3. **Separate booking slots (fixed time blocks)**
    - Rejected: Inflexible for varying chef needs
@@ -180,4 +197,15 @@ occupancy_end_at: 12:30 (space available for next booking)
 
 4. **Event sourcing for availability**
    - Rejected: Over-engineering for MVP
-   - Simple exclusion constraint is sufficient
+   - PostgreSQL remains authoritative for reservation concurrency
+
+5. **`SERIALIZABLE` transactions with mandatory retry**
+   - Valid when all reservation paths use the isolation level and correctly retry serialization failures.
+   - Not selected as the primary strategy because EquipmentRental provides a narrower stable row-lock target.
+
+6. **Advisory locks**
+   - Rejected as the default because the authoritative EquipmentRental row is the natural relational lock target.
+
+7. **Per-physical-unit rows with GiST exclusion constraints**
+   - Could support a larger model that assigns specific physical units and excludes overlapping use per unit.
+   - Not selected for the current fungible quantity-based EquipmentRental model. GiST alone does not directly enforce a sum of overlapping quantities less than or equal to N.

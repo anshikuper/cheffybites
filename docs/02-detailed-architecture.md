@@ -2,8 +2,10 @@
 
 **Version:** 1.0
 **Status:** Architecture Baseline / ADR Approved Baseline
-**Derived from:** `cheffy-bites-master-architecture-development-spec.md`
-**Purpose:** Detailed architecture package for design review, technology decisions, database design, API contracts, implementation planning, and AI-assisted code generation.
+**Derived from:** `01-master-spec.md`
+**Purpose:** Integrated architecture overview for design review, domain boundaries, cross-domain coordination, technology decisions, implementation planning, and AI-assisted code generation.
+
+**Document ownership:** This package integrates and explains the architecture but is not a competing detailed contract source. Accepted ADRs under `docs/adr/` govern architectural decisions. [`03-database-erd.md`](03-database-erd.md) governs persistence representation, [`04-api-contracts.md`](04-api-contracts.md) governs API representation, and [`05-event-contracts.md`](05-event-contracts.md) governs event representation. Proposed ADRs remain Proposed until explicitly accepted.
 
 ---
 
@@ -521,7 +523,7 @@ Owns:
 - Promotion rules.
 - Promotion targets.
 - Promo codes.
-- Promotion usage.
+- Promo-code redemptions.
 - Promotion eligibility.
 - Promotion stacking.
 - Promotion applications.
@@ -536,10 +538,11 @@ Critical invariant:
 
 Owns:
 
-- Payment intent lifecycle.
+- One logical Payment per Order under the current checkout model.
 - Payment attempts.
-- Payment provider references.
-- Payment webhooks.
+- Provider-neutral payment initiation results and provider references.
+- Immutable, deduplicated ProviderEvents.
+- Internal PaymentAllocations.
 - Payment status.
 
 Does not own:
@@ -741,6 +744,8 @@ Rules:
 
 # 10. Database Strategy
 
+This section describes architecture-level database strategy. The canonical relational model, table definitions, relationships, constraints, and persistence representation are maintained in [`03-database-erd.md`](03-database-erd.md). If an illustrative schema name or persistence example in this package differs from that canonical model, implementation must follow [`03-database-erd.md`](03-database-erd.md) subject to Accepted ADRs.
+
 Use one PostgreSQL cluster/database for the MVP with explicit logical ownership.
 
 Recommended actual PostgreSQL schemas:
@@ -796,6 +801,8 @@ All identifiers are UUID/UUIDv7.
 
 # 12. Detailed Database ERD
 
+The following embedded ERD is an architecture-level orientation aid that illustrates major domain relationships. It is not the canonical persistence contract and must not be used as migration-ready schema authority. The complete canonical persistence model is [`03-database-erd.md`](03-database-erd.md); that document governs table structure, nullability, keys, indexes, constraints, and schema-qualified persistence details.
+
 ```mermaid
 erDiagram
     USERS ||--o{ ORGANIZATION_MEMBERS : belongs_to
@@ -850,7 +857,7 @@ erDiagram
     PROMOTIONS ||--o{ PROMOTION_RULES : has
     PROMOTIONS ||--o{ PROMOTION_TARGETS : targets
     PROMOTIONS ||--o{ PROMO_CODES : exposes
-    PROMOTIONS ||--o{ PROMOTION_USAGE : used
+    PROMO_CODES ||--o{ PROMO_CODE_REDEMPTIONS : redeemed_through
     ORDERS ||--o{ PROMOTION_APPLICATIONS : receives
     CHEF_ORDER_GROUPS ||--o{ PROMOTION_APPLICATIONS : scopes
     PROMOTIONS ||--o{ PROMOTION_APPLICATIONS : applied
@@ -858,22 +865,23 @@ erDiagram
     PROMOTION_SNAPSHOTS ||--o{ PROMOTION_APPLICATION_ITEMS : allocates
 
     ORDERS ||--o{ PRICING_SNAPSHOTS : priced
-    ORDERS ||--o{ FINANCIAL_SNAPSHOTS : captures
-    CHEF_ORDER_GROUPS ||--o{ FINANCIAL_SNAPSHOTS : captures
+    CHEF_ORDER_GROUPS ||--o{ PRICING_SNAPSHOTS : optionally_scopes
     ORDERS ||--o{ PAYMENTS : paid_by
     PAYMENTS ||--o{ PAYMENT_ATTEMPTS : attempts
-    PAYMENTS ||--o{ PAYMENT_TRANSACTIONS : transactions
     PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
+    ORDERS ||--o{ PAYMENT_ALLOCATIONS : sources
+    CHEF_ORDER_GROUPS ||--o{ PAYMENT_ALLOCATIONS : optionally_references
     ORDERS ||--o{ REFUNDS : refunded
-    REFUNDS ||--o{ REFUND_TRANSACTIONS : transactions
+    PAYMENTS ||--o{ REFUNDS : refunded_by
     REFUNDS ||--o{ REFUND_LINES : lines
+    PAYMENT_ALLOCATIONS ||--o{ REFUND_LINES : optionally_traces
 
     ORDERS ||--o{ FEE_LINE_ITEMS : charged
     ORDERS ||--o{ TAX_LINE_ITEMS : taxed
-    ORDERS ||--o{ LEDGER_ENTRIES : recorded
 
     PAYOUTS ||--o{ PAYOUT_LINES : contains
-    PAYOUT_LINES ||--o{ LEDGER_ENTRIES : settles
+    PAYMENT_ALLOCATIONS ||--o{ PAYOUT_LINES : settles
+    LEDGER_TRANSACTIONS ||--|{ LEDGER_ENTRIES : contains
 
     ORDERS ||--o| DELIVERIES : may_have
     DELIVERIES ||--o{ DELIVERY_EVENTS : emits
@@ -938,7 +946,6 @@ erDiagram
         string postal_code
         string country_code
         geography point
-        string timezone
     }
 
     KITCHENS {
@@ -947,7 +954,7 @@ erDiagram
         string name
         text description
         string status
-        string timezone
+        string iana_timezone_id
         timestamptz published_at
     }
 
@@ -1004,7 +1011,6 @@ erDiagram
         timestamptz cooking_end_at
         timestamptz occupancy_end_at
         timestamptz hold_expires_at
-        string timezone
         string status
         string cancellation_reason
         int version
@@ -1134,7 +1140,7 @@ erDiagram
         bigint net_minor
         string currency_code
         int version
-        uuid latest_financial_snapshot_id FK
+        uuid latest_pricing_snapshot_id FK
         uuid latest_promotion_snapshot_id FK
     }
 
@@ -1221,50 +1227,82 @@ erDiagram
         string code_hash UK
         string display_code
         int max_global_uses
-        int max_uses_per_customer
         timestamptz valid_from
         timestamptz valid_to
         string status
+    }
+
+    PROMO_CODE_REDEMPTIONS {
+        uuid id PK
+        uuid promo_code_id FK
+        uuid customer_id FK
+        uuid order_id FK
+        string status
+        timestamptz reserved_at
+        timestamptz redeemed_at
+        timestamptz released_at
     }
 
     PROMOTION_APPLICATIONS {
         uuid id PK
         uuid promotion_id FK
         uuid order_id FK
-        uuid chef_order_group_id FK
-        uuid promo_code_id FK
+        uuid chef_order_group_id FK NULL
+        uuid order_item_id FK NULL
+        uuid promo_code_id FK NULL
+        uuid promo_code_redemption_id FK NULL
         bigint discount_minor
         jsonb calculation_snapshot
     }
 
-    PAYMENTS {
+    PRICING_SNAPSHOTS {
         uuid id PK
         uuid order_id FK
-        string provider
-        string provider_payment_intent_id UK
-        string idempotency_key
+        uuid chef_order_group_id FK NULL
+        int snapshot_version
+        bigint subtotal_minor
+        bigint discount_minor
+        bigint delivery_fee_minor
+        bigint fee_minor
+        bigint tax_minor
+        bigint total_minor
+        string currency_code
+        jsonb calculation_evidence
+        timestamptz created_at
+    }
+
+    PAYMENTS {
+        uuid id PK
+        uuid order_id FK,UK
         string status
         bigint amount_minor
         string currency_code
-        jsonb provider_metadata
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     PAYMENT_ATTEMPTS {
         uuid id PK
         uuid payment_id FK
-        string provider_attempt_id
+        int attempt_sequence
+        string provider_name
+        string provider_payment_reference NULL
         string status
         bigint amount_minor
         string currency_code
-        jsonb provider_payload
+        jsonb provider_evidence
         timestamptz attempted_at
+        timestamptz completed_at NULL
     }
 
     PAYMENT_ALLOCATIONS {
         uuid id PK
         uuid payment_id FK
         uuid order_id FK
-        uuid chef_order_group_id FK
+        uuid chef_order_group_id FK NULL
+        uuid chef_business_id FK NULL
+        uuid delivery_id FK NULL
+        uuid tax_line_item_id FK NULL
         string allocation_type
         bigint amount_minor
         string currency_code
@@ -1279,14 +1317,17 @@ erDiagram
         string reason
         string status
         bigint requested_minor
-        bigint approved_minor
+        bigint approved_minor NULL
         string currency_code
+        string provider_name NULL
+        string provider_refund_reference NULL
         jsonb provider_metadata
     }
 
     REFUND_LINES {
         uuid id PK
         uuid refund_id FK
+        uuid payment_allocation_id FK NULL
         uuid order_item_id FK NULL
         uuid chef_order_group_id FK NULL
         string line_type
@@ -1330,8 +1371,9 @@ erDiagram
     PAYOUT_LINES {
         uuid id PK
         uuid payout_id FK
+        uuid payment_allocation_id FK
         uuid order_id FK
-        uuid chef_order_group_id FK
+        uuid chef_order_group_id FK NULL
         uuid kitchen_booking_id FK NULL
         string line_type
         bigint gross_minor
@@ -1342,8 +1384,25 @@ erDiagram
         jsonb calculation_snapshot
     }
 
+    LEDGER_TRANSACTIONS {
+        uuid id PK
+        string currency_code
+        string status
+        string posting_type
+        string source_type
+        uuid source_id
+        uuid compensates_ledger_transaction_id FK NULL
+        int entry_count
+        bigint total_debit_minor
+        bigint total_credit_minor
+        timestamptz created_at
+        timestamptz posted_at NULL
+    }
+
     LEDGER_ENTRIES {
         uuid id PK
+        uuid ledger_transaction_id FK
+        string account_code
         uuid order_id FK NULL
         uuid chef_order_group_id FK NULL
         uuid payout_id FK NULL
@@ -1351,10 +1410,10 @@ erDiagram
         uuid payment_id FK NULL
         uuid refund_id FK NULL
         string entry_type
-        string entry_scope
         bigint amount_minor
-        string currency_code
         string direction
+        string source_type
+        uuid source_id
         jsonb entry_snapshot
         timestamptz created_at
     }
@@ -1365,7 +1424,7 @@ erDiagram
         string provider
         string provider_delivery_id
         string status
-        bigint fee_minor
+        bigint quoted_fee_minor
         string currency_code
     }
 
@@ -1388,16 +1447,6 @@ erDiagram
         geography location
         string status
         bool notify_when_available
-        timestamptz created_at
-    }
-
-    FINANCIAL_SNAPSHOTS {
-        uuid id PK
-        uuid order_id FK
-        uuid chef_order_group_id FK NULL
-        int snapshot_version
-        string snapshot_type
-        jsonb snapshot_evidence
         timestamptz created_at
     }
 
@@ -1436,9 +1485,17 @@ erDiagram
     }
 ```
 
+This embedded ERD is an integrated explanatory view; [`03-database-erd.md`](03-database-erd.md) remains canonical for exact persistence representation. `KITCHENS.iana_timezone_id` is the authoritative IANA timezone identity for Kitchen business rules. Location geography does not become a competing source of Kitchen business-time semantics, and dependent records such as KitchenBooking resolve those semantics through their owning Kitchen rather than copying authoritative timezone configuration.
+
+Recurring Kitchen operating hours, Kitchen/Chef availability, and similar schedules retain business-local date/time semantics interpreted with the owning Kitchen's IANA timezone. Concrete bookings and materialized availability occurrences use resolved real instants represented by `TIMESTAMPTZ`, including booking `start_at`, `cooking_end_at`, `occupancy_end_at`, and hold expiry where applicable. PostgreSQL `TIMESTAMPTZ` identifies an instant; it does not preserve the original IANA timezone, original textual offset, or recurring local schedule semantics. An offset-free API timestamp for a resolved instant must not be silently interpreted as UTC, and `LocalDateTime` alone is not an authoritative resolved cross-system instant.
+
+When resolving business-local input, nonexistent local times in a daylight-saving gap are rejected rather than guessed or shifted. Ambiguous local times in a daylight-saving overlap require sufficient offset disambiguation or are rejected. A later Kitchen timezone configuration change affects future local schedule interpretation but does not rewrite historical bookings or already-materialized occurrence instants.
+
 ---
 
 # 13. Critical Database Constraints
+
+This section explains cross-domain invariants and the architectural reasons for important constraints. Canonical database representation and implementation-ready constraint details are maintained in [`03-database-erd.md`](03-database-erd.md).
 
 ## 13.1 One Kitchen Per Cart
 
@@ -1486,13 +1543,15 @@ for one settlement run
 
 ## 13.4 Unique Promo Redemption
 
-For single-use codes:
+At most one customer-entered promo code may be active or successfully redeemed for one Order checkout. A specific customer may successfully redeem a specific promo code at most once. PromoCodeRedemption uses `RESERVED → REDEEMED` and `RESERVED → RELEASED`; only `RESERVED` and `REDEEMED` consume per-customer and optional global capacity. A released attempt remains historical but permits a new attempt.
 
-```text
-UNIQUE(promo_code_id)
-```
+The canonical persistence model uses partial uniqueness for active/successful `(promo_code_id, customer_id)` and `order_id` redemption records. It does not use general `UNIQUE(promo_code_id)`: a globally one-time code is expressed as `max_global_uses = 1`, while `NULL` means no global cap. There is no configurable per-customer maximum; one successful redemption per customer/code is fixed.
 
-or an equivalent concurrency-safe redemption record depending on future support for code scope.
+To reserve a customer-entered code, one local PostgreSQL transaction locks the stable PromoCode row using `SELECT ... FOR UPDATE` before customer eligibility and the `RESERVED`/`REDEEMED` global count are evaluated. The post-lock count is authoritative; if the optional global cap is exhausted, reservation is rejected. A plain pre-lock count followed by insert is unsafe under `READ COMMITTED`. Advisory and distributed locks are not the default.
+
+The current flow creates the Order before payment, so the redemption references its Order from `RESERVED` onward. Authoritative payment success transitions the reservation idempotently to `REDEEMED`; definitive checkout expiry, cancellation, or final failure transitions it idempotently to `RELEASED`. A retryable provider-attempt failure does not release an otherwise active checkout. No ACID transaction spans PostgreSQL and the provider.
+
+PromotionApplication and immutable calculation snapshots remain distinct from redemption usage. Automatic promotions create no PromoCodeRedemption and leave `promo_code_id` null. Order- and Delivery-scope applications may leave `chef_order_group_id` null; non-item applications leave `order_item_id` null. A code-backed application may reference its nullable `promo_code_redemption_id`. Full and partial refunds create new adjustment evidence and never release a redeemed code or restore eligibility.
 
 ## 13.5 Money
 
@@ -1541,7 +1600,13 @@ WHERE (status IN ('HELD', 'CONFIRMED'));
 
 The final DDL should use a generated/maintained `tstzrange` column or equivalent transaction-safe range representation.
 
-Equipment with quantity > 1 requires inventory allocation logic. A row-level quantity check with transaction locking is preferred initially; if inventory allocation becomes complex, introduce an allocation table keyed by booking and equipment unit.
+Equipment with quantity greater than one uses the per-Kitchen-Space EquipmentRental as the authoritative finite inventory resource. EquipmentCatalogItem is a reusable type definition, and SpaceEquipment primarily represents baseline/included assignment; neither is the additional-rental capacity or lock target. A future Kitchen-wide resource shared across Spaces requires a separate approved business and architecture model.
+
+For reservations requesting equipment, collect the requested `equipment_rental_id` values, sort them deterministically, and lock every corresponding EquipmentRental row with PostgreSQL row-level locking equivalent to `SELECT ... FOR UPDATE`. Only after all locks are held may the transaction validate active/reservable status and Kitchen Space ownership, read `quantity_available`, and recalculate overlapping capacity-consuming EquipmentAllocations. A quote or pre-lock availability calculation is informational and cannot be reused as authoritative capacity.
+
+The capacity check uses the complete half-open Kitchen Booking occupancy interval, including cleaning. `HELD` and `CONFIRMED` bookings reserve required equipment capacity. The EquipmentRental locks, validation of all requested quantities, capacity-consuming EquipmentBooking line changes, all EquipmentAllocations, and the establishing `HELD` or `CONFIRMED` KitchenBooking transition execute in one local PostgreSQL transaction. If any requested resource fails, no partial capacity-consuming state commits.
+
+Normal row-lock waiting is expected. Deterministic ordering minimizes but does not eliminate deadlocks; bounded internal retry may handle PostgreSQL deadlock errors, and request idempotency prevents duplicate side effects. `SERIALIZABLE` with mandatory retry is a valid alternative but is not the primary strategy. Advisory locks are not the default.
 
 ---
 
@@ -1646,9 +1711,9 @@ Platform promotions may stack with Chef promotions when the scopes and compatibi
 
 ## 16.5 One Promo Code
 
-Only one promo code can be attached to an order transaction.
+At most one customer-entered promo code can be attached to an Order checkout. Each customer may successfully redeem the same code once, subject to an optional global cap. A globally one-time code uses `max_global_uses = 1`.
 
-A Chef promotion that does not require a promo code may still apply based on eligibility. A platform promo code may then be evaluated according to the explicit compatibility model.
+A Chef or other automatic promotion that does not require a promo code may still apply based on eligibility and does not create a promo-code redemption. A platform promo code may then be evaluated according to the explicit compatibility model. Expired codes cannot create new reservations. A released checkout reservation does not permanently consume eligibility; a redeemed code remains used after full or partial refund.
 
 ## 16.6 Pricing Snapshot
 
@@ -1708,6 +1773,13 @@ The pricing result becomes a snapshot when checkout is finalized.
 
 ## 18.1 Order
 
+The parent Order owns customer pickup and delivery fulfillment. Every Order has an immutable `fulfillment_type`, selected before checkout is finalized:
+
+```text
+PICKUP
+DELIVERY
+```
+
 ```mermaid
 stateDiagram-v2
     [*] --> CART
@@ -1722,13 +1794,13 @@ stateDiagram-v2
     ACCEPTED --> PREPARING
     PREPARING --> READY_FOR_FULFILLMENT
     READY_FOR_FULFILLMENT --> PICKED_UP
+    PICKED_UP --> COMPLETED
     READY_FOR_FULFILLMENT --> DELIVERY_REQUESTED
     DELIVERY_REQUESTED --> DRIVER_ASSIGNED
-    DRIVER_ASSIGNED --> PICKED_UP
-    PICKED_UP --> OUT_FOR_DELIVERY
+    DRIVER_ASSIGNED --> DRIVER_PICKED_UP
+    DRIVER_PICKED_UP --> OUT_FOR_DELIVERY
     OUT_FOR_DELIVERY --> DELIVERED
     DELIVERED --> COMPLETED
-    PICKED_UP --> COMPLETED
     PENDING_CHEF_ACCEPTANCE --> CANCELLED
     ACCEPTED --> CANCELLED
     PREPARING --> CANCELLED
@@ -1739,6 +1811,16 @@ stateDiagram-v2
     REFUND_PENDING --> REFUNDED
 ```
 
+Fulfillment rules:
+
+- For `PICKUP`, the fulfillment lane is `PAID → PENDING_CHEF_ACCEPTANCE → ACCEPTED → PREPARING → READY_FOR_FULFILLMENT → PICKED_UP → COMPLETED`.
+- For `DELIVERY`, the fulfillment lane is `PAID → PENDING_CHEF_ACCEPTANCE → ACCEPTED → PREPARING → READY_FOR_FULFILLMENT → DELIVERY_REQUESTED → DRIVER_ASSIGNED → DRIVER_PICKED_UP → OUT_FOR_DELIVERY → DELIVERED → COMPLETED`.
+- `PICKED_UP` means completed handoff to the customer or the customer's authorized pickup party. It must not represent delivery-driver possession.
+- `DRIVER_PICKED_UP` means the delivery driver has taken possession of the Order.
+- `fulfillment_type` is immutable after Order creation.
+- Pickup-only and delivery-only transitions must not cross lanes.
+- Existing rejection, cancellation, payment-failure, and refund paths remain explicit and are subject to their approved rules.
+
 ## 18.2 Chef Order Group
 
 ```mermaid
@@ -1747,14 +1829,14 @@ stateDiagram-v2
     PENDING_ACCEPTANCE --> ACCEPTED
     PENDING_ACCEPTANCE --> REJECTED
     ACCEPTED --> PREPARING
-    PREPARING --> READY
-    READY --> HANDOFF_PENDING
-    HANDOFF_PENDING --> COMPLETED
     ACCEPTED --> CANCELLED
+    PREPARING --> READY
     PREPARING --> CANCELLED
 ```
 
-The overall Order cannot move to `READY_FOR_FULFILLMENT` while required Chef Groups remain unready.
+`ChefOrderGroup` owns Chef preparation responsibility only. It does not own `PICKED_UP`, `DRIVER_PICKED_UP`, `OUT_FOR_DELIVERY`, `DELIVERED`, or `COMPLETED`; final customer/delivery fulfillment remains the parent Order's responsibility.
+
+Each ChefOrderGroup independently reaches `READY`. The parent Order reaches `READY_FOR_FULFILLMENT` only after the Order coordination rules determine that all required ChefOrderGroups are ready. ChefOrderGroup rejection and cancellation must be handled by those Order coordination rules. This coordination requirement does not define or imply a new partial-acceptance business rule.
 
 ---
 
@@ -1807,6 +1889,10 @@ Provider webhooks must:
 
 # 20. Payment and Payout Architecture
 
+`Payment` is the Financial domain's logical customer payment for one Order. The current checkout model permits at most one Payment per Order and does not support split tender. A Payment may own multiple PaymentAttempts; each attempt is one retryable provider interaction, not another logical Payment. The provider-neutral `PaymentGateway` returns `PaymentInitiationResult`, and persistence uses generic `provider_payment_reference` terminology rather than a provider-specific payment-object name.
+
+`PaymentAllocation` is Cheffy's authoritative internal distribution of payment value. Chef proceeds, platform fee, delivery, and tax obligations use type-appropriate relational references. Chef proceeds require ChefOrderGroup and recipient identity; platform, delivery, and tax allocations do not require ChefOrderGroup. Internal allocation does not prove an external connected-account transfer. External settlement is a later provider workflow governed by the approved legal and connected-account model.
+
 ```mermaid
 sequenceDiagram
     participant C as Customer
@@ -1820,9 +1906,9 @@ sequenceDiagram
     C->>API: Checkout
     API->>P: Calculate final price
     P-->>API: Pricing snapshot
-    API->>S: Create/confirm payment flow
+    API->>S: Initiate provider-neutral payment interaction
     S-->>API: Payment confirmation/webhook
-    API->>L: Record payment and allocation
+    API->>L: Record Payment, internal allocations, and balanced posting
     API-->>C: Order paid
 
     Note over H,E: Settlement occurs after configured eligibility period
@@ -1832,19 +1918,19 @@ sequenceDiagram
 
 For one Kitchen Order containing multiple Chefs, the financial allocation must retain separate Chef payable amounts while charging the customer once.
 
-The authoritative operational-to-financial relationship is: **Order → ChefOrderGroup → PayoutLineItem → Payout**.
+The authoritative operational-to-financial relationship for Chef proceeds is: **Order → ChefOrderGroup → PaymentAllocation → PayoutLine → Payout**.
 
 A Chef payout must be traceable to the exact Chef Order Groups that generated the payable amount. A payout may contain multiple payout line items from multiple completed orders, but each Chef Order Group allocation must remain separately identifiable for reporting, refunds, reconciliation, and dispute handling.
 
-The operational payment architecture is one customer payment, internal allocation, and provider-managed payouts. The legal Merchant-of-Record, tax remittance, chargeback, and refund liability decisions remain unresolved and must be finalized before production.
+The operational payment architecture is one customer Payment, internal allocation, and automated provider-assisted settlement workflows. The legal Merchant-of-Record, tax/remittance, chargeback/refund liability, connected-account topology, reserve, negative-balance, and country settlement/risk decisions remain unresolved and must be finalized before production.
 
 Stripe Connect is a likely provider baseline, but the architecture remains provider-neutral until legal/accounting sign-off.
 
 ---
 
-# 21. Chef Settlement and Order History Model
+# 21. Chef Operational, Financial Reference, and Order History Model
 
-`ChefOrderGroup` is a first-class operational **and financial aggregation boundary**.
+`ChefOrderGroup` is the first-class Chef operational boundary, Chef promotion boundary, financial allocation reference, refund allocation reference, payout traceability boundary, and reporting boundary for one Chef's portion of an Order. The financial domain owns the Payment, Refund, Payout, and Ledger aggregates. The parent Order owns final fulfillment, including delivery state.
 
 ```text
 CUSTOMER ORDER
@@ -1855,30 +1941,30 @@ CUSTOMER ORDER
       │      ├── Chef A
       │      ├── Order Items
       │      ├── Chef Promotions
-      │      ├── Chef Revenue
-      │      ├── Refund Adjustments
-      │      └── Payout Allocation
+      │      ├── Financial Allocation References
+      │      ├── Refund Allocation References
+      │      └── Payout Traceability
       │
       ├── ChefOrderGroup B
       │      ├── Chef B
       │      ├── Order Items
       │      ├── Chef Promotions
-      │      ├── Chef Revenue
-      │      ├── Refund Adjustments
-      │      └── Payout Allocation
+      │      ├── Financial Allocation References
+      │      ├── Refund Allocation References
+      │      └── Payout Traceability
       │
       └── ChefOrderGroup C
              ├── Chef C
              ├── Order Items
              ├── Chef Promotions
-             ├── Chef Revenue
-             ├── Refund Adjustments
-             └── Payout Allocation
+             ├── Financial Allocation References
+             ├── Refund Allocation References
+             └── Payout Traceability
 
 ChefOrderGroup
       │
       ▼
-PayoutLineItem
+PayoutLine
       │
       ▼
 Payout
@@ -1892,15 +1978,15 @@ Every Chef Order Group identifies exactly one Chef's portion of one customer Ord
 - Chef dashboard order counts.
 - Chef-specific item totals.
 - Chef promotions.
-- Chef fulfillment status.
-- Chef revenue.
-- Chef refunds/adjustments.
-- Chef payout calculations.
+- Chef preparation status.
+- Chef financial allocation references.
+- Chef refund allocation references.
+- Chef payout traceability.
 - Chef reporting and analytics.
 
 A Chef order-history query should resolve through `ChefOrderGroup`, not by scanning all Orders for a nullable Chef identifier.
 
-`ChefOrderGroup` must support immutable promotion snapshots, financial snapshots, payment allocations, refund allocations, payout lines, and ledger entries. A `latest_snapshot_id` may exist only as a convenience pointer and must never be treated as the source of truth.
+Financial records reference `chef_order_group_id` where applicable. This includes payment allocations, refund lines, payout lines, and ledger entries owned by the financial domain. Immutable PromotionSnapshots and the pricing-owned PricingSnapshot preserve historical calculation evidence; any latest-snapshot pointer is a convenience only and is never the historical source of truth. These references do not make ChefOrderGroup the owner of Payment, PaymentAllocation, Refund, Payout, LedgerTransaction, or LedgerEntry.
 
 Conceptually:
 
@@ -1917,7 +2003,7 @@ Chef Business
 
 ## 21.2 Payout Allocation Rule
 
-A Chef payout must never be derived only from the overall Order total. The payout calculation must start from the Chef's own ChefOrderGroup allocations, then apply the configured commission, taxes, refunds, adjustments, and settlement rules.
+A Chef payout must never be derived only from the overall Order total. Financial-domain payout calculation must start from allocations that reference the Chef's own ChefOrderGroup, then apply the configured commission, taxes, refunds, adjustments, and settlement rules.
 
 ```text
 ChefOrderGroup
@@ -1933,7 +2019,7 @@ ChefOrderGroup
       Chef Payable
            │
            ▼
-    PayoutLineItem
+    PayoutLine
            │
            ▼
         Payout
@@ -1941,7 +2027,7 @@ ChefOrderGroup
 
 ## 21.3 Partial Refund Rule
 
-If an Order Item belonging to Chef A is refunded, only the relevant Chef A ChefOrderGroup financial allocation is recalculated, plus any shared order-level financial effects that business/tax rules require. Chef B and Chef C allocations must remain independently traceable.
+If an Order Item belonging to Chef A is refunded, only the financial allocation referencing the relevant Chef A ChefOrderGroup is recalculated, plus any shared order-level financial effects that business/tax rules require. The financial domain owns the Refund aggregate and resulting financial records. Chef B and Chef C allocations must remain independently traceable.
 
 ## 21.4 Chef Reporting
 
@@ -1964,9 +2050,17 @@ Chef A
 └── Completed Payouts
 ```
 
-# 21. Financial Ledger Model
+# 21A. Financial Ledger Model
 
-The ledger is an audit-friendly record of financial facts.
+ADR-015's LedgerTransaction is the explicit posting/finalization header for its LedgerEntries. One LedgerTransaction owns exactly one currency, and every child entry participates in that currency. `ledger_transaction_id` is a required parent relationship; an unparented transaction UUID grouping is not the model.
+
+The only normal lifecycle is `DRAFT → POSTED`, and POSTED is terminal. Before posting, PostgreSQL database-controlled finalization must independently calculate persisted entry count and debit/credit totals, require meaningful posting sides, and enforce total debits equal total credits. A normal row CHECK cannot enforce this cross-row aggregate. Application validation may fail early but does not replace trigger-equivalent database enforcement.
+
+After POSTED, the header cannot return to DRAFT, be deleted, or be mutated to rewrite history. Its entries cannot be inserted, updated, or deleted. Corrections create new balanced compensating LedgerTransactions; original posted history remains immutable.
+
+`LedgerEntry.account_code` is required and governed by the Financial domain's controlled vocabulary. Unknown or unauthorized codes are rejected by application/domain logic and database persistence. The exact database-backed representation is deferred to domain/migration design; no ledger-account table or full chart-of-accounts subsystem is required here.
+
+One local PostgreSQL transaction atomically contains the authoritative financial state change, DRAFT LedgerTransaction header, every LedgerEntry, database balance/finalization, transition to POSTED, and transactional-outbox row for `LedgerTransactionPosted.v1`. If posting fails, none commit. External provider calls stay outside this transaction and are coordinated through idempotent commands, PaymentAttempts, immutable deduplicated ProviderEvents, outbox processing, and reconciliation.
 
 Conceptual entry types:
 
@@ -1986,16 +2080,22 @@ FINANCIAL_ADJUSTMENT
 
 Rules:
 
-1. Financial entries are append-only from a business perspective.
-2. Corrections create new entries.
-3. Historical pricing snapshots are immutable.
-4. Every payout can be reconciled to ledger entries.
-5. Every refund references the underlying financial allocation.
-6. Payment allocations, refund allocations, payout lines, and promotion snapshots remain separately identifiable even when represented in the same ledger stream.
+1. Monetary values use integer minor units and currency codes; floating-point canonical money is prohibited.
+2. Currency remains consistent across a Payment flow's allocations, refunds, payout lines, LedgerTransaction, and LedgerEntries.
+3. Historical PricingSnapshots, FeeLineItems, TaxLineItems, PaymentAllocations, and posted ledger history are immutable evidence.
+4. FeeLineItem is Pricing calculation evidence and TaxLineItem is Tax/Pricing evidence; neither is settlement truth. Settled obligations use PaymentAllocation, PayoutLine where applicable, and ledger postings.
+5. A Delivery fee field is quoted/captured commercial delivery-pricing evidence, not settlement truth; its obligation uses PaymentAllocation and ledger posting.
+6. Every payout traces each PayoutLine to its source payable obligation, normally the applicable PaymentAllocation, and prevents duplicate settlement in the same context.
+7. Every refund references its Payment and Order; RefundLines reference PaymentAllocation, OrderItem, and ChefOrderGroup where applicable. Provider-confirmed amounts may remain null until known, and provider refund references remain generic.
+8. ProviderEvent is immutable inbound evidence with database uniqueness on `(provider_name, provider_event_id)`. Duplicate callbacks cannot duplicate financial state changes, postings, refunds, payouts, or outbox events.
+9. Financial command idempotency keys include operation/key/request-hash semantics; reuse with a different hash is rejected independently of provider idempotency.
+10. Reconciliation compares immutable Cheffy financial truth with provider evidence. Mismatches create auditable investigation/evidence and, where required, new compensating records rather than history mutation.
 
 ---
 
 # 22. API Contract Architecture
+
+Sections 22–40 provide architecture-level API conventions and illustrative endpoint examples. They are not a competing API contract. The canonical API specification, including endpoints, methods, request and response structures, validation rules, and representation details, is [`04-api-contracts.md`](04-api-contracts.md). Implementation and OpenAPI generation must follow that canonical document subject to Accepted ADRs.
 
 Base URL:
 
@@ -2755,6 +2855,8 @@ admin:catalog:write
 
 # 41. Event Architecture
 
+This section summarizes the event-driven architecture and highlights representative events for cross-domain understanding. It is not the authoritative event catalogue. The canonical event envelopes, catalogue, payload semantics, compatibility rules, and consumer requirements are maintained in [`05-event-contracts.md`](05-event-contracts.md), governed by applicable Accepted ADRs including ADR-002, ADR-009, and ADR-016.
+
 Events are internal integration contracts, not database row dumps.
 
 Recommended envelope:
@@ -2772,6 +2874,15 @@ Recommended envelope:
   "payload": {}
 }
 ```
+
+Envelope and compatibility rules:
+
+- `eventType` and `eventVersion` are separate fields and must agree. If `eventType` is `<Name>.vN`, then `eventVersion` must equal `N`. For example, `OrderAccepted.v1` with `eventVersion: 1` is valid; `OrderAccepted.v2` with `eventVersion: 1` is invalid.
+- `schemaVersion` is not a replacement for `eventVersion`.
+- Same-version optional additive changes are allowed only when compatible and consumers tolerate unknown fields.
+- Breaking changes require a new event version.
+- Consumers must route and process by supported complete event type/version. They must not deserialize or process an unknown higher version as an older supported version.
+- Unsupported versions follow an explicit consumer policy appropriate to criticality, such as skip, retry, park, dead-letter queue, or alert. Every consumer is not required to use every option.
 
 Core events:
 
@@ -2791,18 +2902,32 @@ OrderAccepted.v1
 OrderRejected.v1
 ChefOrderGroupPreparing.v1
 ChefOrderGroupReady.v1
+OrderReadyForFulfillment.v1
 DeliveryRequested.v1
 DriverAssigned.v1
 OrderPickedUp.v1
+DriverPickedUp.v1
 OrderOutForDelivery.v1
 OrderDelivered.v1
+OrderCompleted.v1
 OrderCancelled.v1
 RefundProcessed.v1
 PayoutCreated.v1
 PayoutProcessed.v1
+LedgerTransactionPosted.v1
 PromotionApplied.v1
 PromotionInvalidated.v1
 ```
+
+Fulfillment event semantics:
+
+- `OrderReadyForFulfillment.v1` is emitted when parent Order coordination determines that all required ChefOrderGroups are `READY` and the Order reaches `READY_FOR_FULFILLMENT`. A single ChefOrderGroup reaching `READY` does not make the Order ready while another required group remains unready.
+- `OrderPickedUp.v1` means the customer or authorized pickup party has picked up a `PICKUP` Order.
+- `DriverPickedUp.v1` means the delivery driver has taken possession of a `DELIVERY` Order.
+- `OrderPickedUp.v1` and `DriverPickedUp.v1` are distinct event types and business meanings. `OrderPickedUp.v1` must not represent driver possession.
+- `OrderCompleted.v1` is the parent Order final-completion event after the applicable pickup or delivery lane completes. ChefOrderGroup does not own final Order completion.
+
+`LedgerTransactionPosted.v1` represents one successfully POSTED balanced LedgerTransaction, not an individual LedgerEntry. Its aggregate identity is `ledgerTransactionId`; the provider-neutral payload carries currency, posting time, source identity, entry count, and validated debit/credit totals without embedding all entries. The canonical envelope and payload are defined in [`05-event-contracts.md`](05-event-contracts.md).
 
 ---
 
@@ -2825,12 +2950,15 @@ sequenceDiagram
     O-->>A: Commit
     P->>O: Read unpublished events
     P->>Q: Publish event
+    Q-->>P: Acknowledge broker publication
+    P->>O: Record publication success
     Q->>C: Deliver event
     C->>C: Process idempotently
-    C->>O: Mark event published (or retry state)
 ```
 
-Consumer deduplication should be based on `eventId` or a consumer-specific inbox table.
+The producer-side publisher owns publication lifecycle state. Its `attempts`, `last_error`, and `next_attempt_at` values govern retries when broker publication fails; publication success such as `published_at` is recorded only after the broker acknowledges publication according to the publishing strategy. The consumer never updates or reverts the producer's outbox row.
+
+Consumer deduplication should be based on `eventId` or a consumer-specific inbox table. Consumer processing retry and dead-letter handling are independent of producer outbox publication retry; consumer failure does not revert producer publication success. No distributed transaction spans producer, broker, and consumer.
 
 ---
 
@@ -3163,324 +3291,29 @@ Never log:
 
 ---
 
-# 53. Final Accepted ADRs
-
-## ADR-001 — Modular Monolith First
-
-**Status:** Accepted
-
-**Decision:** Start with one deployable Spring Boot modular monolith.
-
-**Why:**
-
-- Strong transactional coupling.
-- Lower operational complexity.
-- Easier local development.
-- Easier AI-assisted cross-module changes.
-- Clear extraction path later.
-
-**Rejected:** Immediate microservices.
-
-**Consequence:** Modules must be designed for future extraction even though they share one runtime/database initially.
-
----
-
-## ADR-002 — Event-Driven Integration Through Outbox
-
-**Status:** Accepted
-
-**Decision:** Use transactional outbox + SQS/EventBridge for asynchronous integration.
-
-**Why:** Notifications, delivery integration, analytics, and search indexing do not need to block the primary transaction.
-
-**Rejected:** Kafka for MVP.
-
-**Consequence:** Consumers must be idempotent and eventually consistent where applicable.
-
----
-
-## ADR-003 — Next.js for Web
-
-**Status:** Accepted
-
-**Decision:** Use React + Next.js App Router + TypeScript.
-
-**Why:** Supports public SEO-oriented customer pages and protected role-based dashboards in one technology family.
-
-**Consequence:** Avoid business logic duplication across the three web apps. Share API client and design system packages.
-
----
-
-## ADR-004 — React Native for Mobile
-
-**Status:** Accepted
-
-**Decision:** Use React Native + Expo + TypeScript for three mobile applications.
-
-**Why:** Large code reuse across apps, shared TypeScript ecosystem, fast development, native capability access.
-
-**Consequence:** Use New Architecture-compatible libraries and keep native platform integrations behind abstractions.
-
----
-
-## ADR-005 — Monorepo
-
-**Status:** Accepted
-
-**Decision:** One Git repository managed by pnpm + Turborepo.
-
-**Why:** Six clients plus shared types/design/API packages benefit from coordinated changes.
-
-**Consequence:** Repository ownership and CI pipelines must remain modular; shared packages must not become dumping grounds.
-
----
-
-## ADR-006 — PostgreSQL + PostGIS as System of Record
-
-**Status:** Accepted
-
-**Decision:** PostgreSQL with PostGIS.
-
-**Why:** Strong transactions, relational integrity, financial consistency, scheduling, and location queries.
-
-**Rejected:** MongoDB as primary store.
-
-**Consequence:** Use JSONB only where domain flexibility is justified, not as a substitute for relational modeling.
-
----
-
-## ADR-007 — Redis Is Cache/Coordination Only
-
-**Status:** Accepted
-
-**Decision:** Redis never becomes authoritative for bookings, payments, orders, or ledger state.
-
-**Why:** Transactional correctness must remain in PostgreSQL/payment provider.
-
----
-
-## ADR-008 — Auth0/OIDC for Identity
-
-**Status:** Accepted
-
-**Decision:** Use Auth0/OIDC rather than building password authentication.
-
-**Why:** Reduces security burden and supports MFA, federation and OIDC.
-
-**Consequence:** Local application user record maps external identity to business/role data.
-
----
-
-## ADR-009 — Stripe Connect for Marketplace Payments
-
-**Status:** Proposed / architecture baseline
-
-**Decision:** Use a centralized marketplace checkout with automated allocation and provider-managed payouts as the operational payment architecture. Stripe Connect is a likely initial provider, but the legal Merchant-of-Record, tax, chargeback, refund, and reserve decisions remain unresolved.
-
-**Why:** One Kitchen Order may allocate money to several Chefs, while Kitchen Bookings pay Entrepreneurs. The architecture must support one customer payment, internal allocation, and automated settlement without hard-coding the final legal posture.
-
-**Gate:** Merchant-of-record, connected-account, tax, payout, reserve, and country-specific configuration must be validated legally/accounting-wise before production activation.
-
----
-
-## ADR-010 — One-Kitchen / Multi-Chef Order Model
-
-**Status:** Accepted
-
-**Decision:** An Order belongs to exactly one physical Kitchen and may contain multiple Chef Order Groups from that Kitchen.
-
-**Why:** Supports multiple Chefs in one location while allowing a single delivery and delivery fee.
-
-**Consequence:** Cart must be Kitchen-scoped. Cross-Kitchen add-to-cart is rejected.
-
----
-
-## ADR-011 — Chef-Level Promotion Isolation
-
-**Status:** Accepted
-
-**Decision:** Chef promotions evaluate only the Chef's eligible Order Group items, and Chef A / Chef B are independent promotion domains.
-
-**Why:** Prevents Chef A's promotion from being triggered by Chef B's items.
-
-**Consequence:** Promotion context must include Chef Order Group boundaries.
-
----
-
-## ADR-012A — ChefOrderGroup as First-Class Settlement Boundary
-
-**Status:** Accepted
-
-**Decision:** Treat `ChefOrderGroup` as a first-class operational, reporting, and financial entity with immutable promotion/financial history and optional convenience pointers to the latest snapshot records.
-
-**Why:** A single customer Order can contain multiple Chefs from one Kitchen. Each Chef needs independent fulfillment state, promotion scope, order history, revenue, refunds, and payouts.
-
-**Consequence:** `OrderItem` belongs to `ChefOrderGroup`; Chef payout allocations reference `ChefOrderGroup`; Chef order history queries start from `ChefOrderGroup`; and refunds/adjustments preserve Chef-level traceability without overwriting historical facts.
-
----
-
-## ADR-012 — Promotion Evaluation Order
-
-**Status:** Accepted
-
-**Decision:** Evaluate promotions by scope and qualifying basis: item-level promotions first, then ChefOrderGroup promotions, then delivery promotions, then platform promotions. Conflicts are resolved by compatibility, exclusivity, priority, savings, and deterministic tie-breaker. Item-level and group-level promotions may coexist when their scopes do not overlap.
-
-**Chef rules:**
-
-- Chef A and Chef B promotion domains are independent.
-- ChefOrderGroup is the Chef promotion boundary.
-- Group-level Chef promotions must declare an explicit qualifying basis.
-
-**Platform:**
-
-- May stack with Chef promotion when compatibility rules allow it.
-
-**Promo code:**
-
-- Maximum one promo code per transaction.
-- Promo code is single-use.
-
-**Consequence:** Pricing snapshot must preserve qualifying basis, eligible/excluded item IDs, selection evidence, and applied/rejected promotion outcomes.
-
----
-
-## ADR-013 — Financial Immutability
-
-**Status:** Accepted
-
-**Decision:** Financial facts are append-only from a business perspective.
-
-**Why:** Auditing, reconciliation, refunds and payouts require historical truth.
-
-**Consequence:** Corrections are adjustments/refunds, not destructive updates.
-
----
-
-## ADR-014 — Payment/Order State Separation
-
-**Status:** Accepted
-
-**Decision:** Payment status and Order operational status are separate aggregates/concepts.
-
-**Why:** An order can have multiple payment attempts, refunds, and adjustments.
-
-**Consequence:** Never derive payment truth from a client page or order status alone.
-
----
-
-## ADR-015 — Delivery Provider Adapter
-
-**Status:** Accepted
-
-**Decision:** External delivery providers are behind a `DeliveryGateway` port.
-
-**Why:** Prevent provider lock-in and isolate webhook/API models.
-
-**Consequence:** The first provider is an implementation detail selected during rollout.
-
----
-
-## ADR-016 — PostGIS for Nearby Demand
-
-**Status:** Accepted
-
-**Decision:** Use PostGIS for nearby kitchen/Chef/Food Request queries.
-
-**Why:** Nearby Chef discovery is a core product feature.
-
-**Consequence:** Customer exact locations are protected; Chef-facing queries expose only business-appropriate location information.
-
----
-
-## ADR-017 — PostgreSQL Search First
-
-**Status:** Accepted
-
-**Decision:** PostgreSQL full-text + structured search + PostGIS for MVP.
-
-**Why:** Avoid an extra search cluster before scale/relevance requirements justify it.
-
-**Consequence:** OpenSearch may be introduced later behind a search port.
-
----
-
-## ADR-018 — S3 for Media
-
-**Status:** Accepted
-
-**Decision:** Images/documents live in S3, served through CloudFront.
-
-**Why:** Scalability, cost, CDN support and separation from transactional data.
-
----
-
-## ADR-019 — ECS Fargate for MVP Runtime
-
-**Status:** Accepted
-
-**Decision:** Deploy Spring Boot and worker workloads on ECS Fargate.
-
-**Why:** Lower operational overhead than Kubernetes while supporting horizontal scaling.
-
-**Consequence:** Kubernetes is deferred until concrete requirements justify it.
-
----
-
-## ADR-020 — REST + OpenAPI
-
-**Status:** Accepted
-
-**Decision:** Public/application APIs are REST and specified by OpenAPI.
-
-**Why:** Web/mobile interoperability, generated TypeScript client, clear contracts, simple observability.
-
-**Consequence:** Internal module calls remain in-process unless asynchronous/event behavior is justified.
-
----
-
-## ADR-021 — Flyway Migrations
-
-**Status:** Accepted
-
-**Decision:** Every schema change is a version-controlled Flyway migration.
-
-**Why:** Reproducible environments and safe deployment history.
-
-**Consequence:** Never edit an already-applied production migration.
-
----
-
-## ADR-022 — Tax Configuration Over Hard-Coding
-
-**Status:** Accepted with legal validation gate
-
-**Decision:** Tax calculation is configuration/provider driven and versioned.
-
-**Why:** Tax rules vary by jurisdiction, transaction type and effective date.
-
-**Consequence:** Tax decisions are snapshotted into finalized transactions. Legal/accounting review is mandatory before production launch.
-
----
-
-## ADR-023 — Food Request Is a Separate Domain
-
-**Status:** Accepted
-
-**Decision:** Food Request/Demand is separate from Saved Food/Wishlist.
-
-**Why:** Food Request represents market demand and can aggregate multiple customers.
-
-**Consequence:** Chefs can discover demand and respond through controlled workflows.
-
----
-
-## ADR-024 — No AI in Core Transaction Path
-
-**Status:** Accepted
-
-**Decision:** AI may enrich catalog, matching, recommendation and demand features, but cannot be required for payment, booking, promotion eligibility, tax, order state, or refunds.
-
-**Why:** Core transactional workflows require deterministic and auditable behavior.
+# 53. Architecture Decision Record Registry
+
+The standalone files under `docs/adr/` are the canonical ADR registry. ADR status comes from each standalone ADR file. A Proposed ADR must not be treated as Accepted until its `Status` is explicitly changed in the standalone ADR.
+
+## Accepted ADRs
+
+- ADR-001 — Modular Monolith First
+- ADR-002 — Event-Driven Integration Through Outbox
+- ADR-003 — Next.js for Web
+- ADR-006 — Promotion Targeting Model
+- ADR-007 — Booking Concurrency Control
+- ADR-009 — Outbox Table Schema
+- ADR-016 — Event Versioning
+
+## Proposed ADRs
+
+- ADR-005 — Order Fulfillment Type Separation
+- ADR-010 — UUIDv7 Identifier Strategy
+- ADR-011 — Timezone Modeling Strategy
+- ADR-012 — Payment / Marketplace Settlement
+- ADR-013 — ChefOrderGroup Aggregate + Financial Boundary
+- ADR-014 — Promotion Engine
+- ADR-015 — Financial Ledger / Reconciliation
 
 ---
 
@@ -3878,8 +3711,8 @@ Use the following prompt when giving this package to a coding AI:
 > 4. Chef promotions operate only against that Chef's eligible items.
 > 5. Chef promotions are evaluated independently within each ChefOrderGroup and resolved through scope, compatibility, exclusivity, priority, savings, and a deterministic tie-breaker.
 > 6. Platform promotions may stack with Chef promotions according to the approved pricing sequence.
-> 7. Only one promo code may be used per transaction.
-> 8. Promo codes are single-use.
+> 7. At most one customer-entered promo code may be used per Order checkout.
+> 8. Each customer may successfully redeem a specific promo code at most once; an optional global cap controls total redemptions, and refunds do not restore eligibility.
 > 9. Financial history is immutable and auditable.
 > 10. Payment state is confirmed by the backend/provider, never by the UI.
 > 11. Booking/resource reservation is concurrency-safe.
@@ -3902,50 +3735,35 @@ Use the following prompt when giving this package to a coding AI:
 
 # 62. Document Ownership
 
-This package should be stored under:
+Architecture documentation has explicit, non-competing ownership:
 
-```text
-docs/architecture/cheffy-bites-detailed-architecture-package.md
-```
+| Document | Canonical responsibility |
+|---|---|
+| [`01-master-spec.md`](01-master-spec.md) | Product and business requirements |
+| [`02-detailed-architecture.md`](02-detailed-architecture.md) | Integrated architecture overview, domain boundaries, cross-domain architecture, state coordination, technology decisions, and references to specialized contracts |
+| [`03-database-erd.md`](03-database-erd.md) | Persistence and relational representation |
+| [`04-api-contracts.md`](04-api-contracts.md) | API contract representation |
+| [`05-event-contracts.md`](05-event-contracts.md) | Event contract representation |
+| `docs/adr/*` | Architecture decisions and each decision's status |
 
-Related documents:
+Embedded ERDs, endpoint examples, event lists, and payloads in this package are explanatory architecture summaries only. They do not override their specialized canonical documents. Useful domain explanations and cross-domain coordination remain owned by this package even when a specialized contract represents the resulting persistence, API, or event shape.
 
-```text
-docs/architecture/
-├── cheffy-bites-detailed-architecture-package.md
-├── c4-context.md
-├── c4-container.md
-├── c4-components.md
-├── deployment.md
-├── data-model.md
-└── api-contracts.md
-
-docs/adr/
-├── ADR-001-modular-monolith.md
-├── ADR-002-transactional-outbox.md
-├── ADR-003-nextjs.md
-├── ...
-└── ADR-024-no-ai-core-transaction-path.md
-```
-
-The single package is the reviewable baseline. Once architecture is approved, individual diagrams/API/ADR files can be split into separate source-controlled artifacts.
+The standalone files under `docs/adr/` are the canonical ADR registry. ADR status is defined only by each standalone ADR file. A Proposed ADR must not be implemented as an Accepted decision unless and until its status is explicitly changed.
 
 ---
 
-# 63. Source of Truth Hierarchy
+# 63. Scope-Specific Sources of Truth
 
-When documents disagree, use this hierarchy:
+Use the following scope-specific ownership rules; this list is not a global precedence order:
 
-```text
-1. Approved Business Rules
-2. Approved ADRs
-3. This Detailed Architecture Package
-4. Master Product/Architecture Specification
-5. API/OpenAPI Implementation
-6. Source Code
-```
+1. Accepted ADRs govern the architectural decisions they record and each standalone ADR defines its own status.
+2. [`01-master-spec.md`](01-master-spec.md) governs product and business requirements.
+3. [`03-database-erd.md`](03-database-erd.md) governs persistence representation.
+4. [`04-api-contracts.md`](04-api-contracts.md) governs API representation.
+5. [`05-event-contracts.md`](05-event-contracts.md) governs event representation.
+6. [`02-detailed-architecture.md`](02-detailed-architecture.md) governs integrated architecture explanation, domain/component interaction, cross-domain coordination, implementation direction, and architectural overview. It summarizes specialized representations and must remain consistent with their canonical documents.
 
-If source code conflicts with an approved architecture decision, do not silently reinterpret the architecture. Raise an architecture/documentation correction and make the implementation consistent.
+Proposed ADRs remain Proposed until explicitly accepted and must not silently override the current approved baseline or an Accepted ADR. If canonical documents appear to conflict, do not choose one based on an assumed hierarchy and do not invent a reconciliation. Stop implementation of the conflicting area, identify the conflict and impact, reconcile the owning canonical documents or ADR explicitly, and keep linked summaries consistent. Where an Accepted ADR establishes an architecture decision, each specialized document must conform within its own representation scope. Source code and generated OpenAPI/AsyncAPI artifacts must conform to the applicable canonical documents rather than creating another source of truth.
 
 ---
 

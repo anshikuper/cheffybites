@@ -20,7 +20,7 @@ We will implement the outbox with the following schema:
 CREATE SCHEMA IF NOT EXISTS outbox;
 
 CREATE TABLE outbox.outbox_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY,
     
     -- Event identification
     aggregate_type VARCHAR(100) NOT NULL,  -- e.g., 'ORDER', 'KITCHEN_BOOKING'
@@ -62,6 +62,8 @@ CREATE INDEX idx_outbox_correlation
 ON outbox.outbox_events (correlation_id) 
 WHERE correlation_id IS NOT NULL;
 ```
+
+The application supplies `id` through the repository-approved identifier-generation layer when it persists the event in the domain transaction. The persisted database type remains `UUID`; this schema does not prescribe a database-generated random UUID default.
 
 ### Event Envelope
 

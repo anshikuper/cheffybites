@@ -34,7 +34,7 @@ CREATE TABLE "order".chef_order_groups (
     net_minor BIGINT NOT NULL CHECK (net_minor >= 0),
     currency_code CHAR(3) NOT NULL,
     version INT NOT NULL DEFAULT 0,
-    latest_financial_snapshot_id UUID NULL,
+    latest_pricing_snapshot_id UUID NULL,
     latest_promotion_snapshot_id UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -42,7 +42,7 @@ CREATE TABLE "order".chef_order_groups (
 );
 ```
 
-`latest_*_snapshot_id` values are convenience pointers only and are never the historical source of truth.
+`latest_pricing_snapshot_id` and `latest_promotion_snapshot_id` are convenience references only and are never the historical source of truth. PricingSnapshot remains Pricing-owned immutable commercial/calculation evidence, and PromotionSnapshot remains Promotion-owned evaluation evidence. ChefOrderGroup may reference that evidence but does not own either aggregate or any Financial-domain aggregate.
 
 ### Order Items
 
