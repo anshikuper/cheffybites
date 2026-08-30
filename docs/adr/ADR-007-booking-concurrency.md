@@ -8,6 +8,8 @@ Accepted
 
 The equipment-concurrency portion was correctively amended after review found that the original aggregate `SUM`-plus-`INSERT` algorithm was not serialized under PostgreSQL `READ COMMITTED`. A transaction containing only capacity read, overlap sum, comparison, and allocation insert can race with another transaction performing the same sequence. This amendment replaces that defective equipment-capacity design with row-level serialization on the authoritative EquipmentRental resource. The accepted Kitchen Space GiST exclusion design is unchanged.
 
+This Accepted ADR was subsequently amended additively to define how subscription-funded, recurring-materialization, and booking-replacement workflows compose with the accepted concrete KitchenBooking and EquipmentRental concurrency model. The amendment does not supersede the existing Space range/exclusion, hold, cleaning-occupancy, equipment-capacity, or locking decisions. Kitchen-subscription aggregate, entitlement-policy, recurrence, billing, rollover, renewal, and commercial-term design remain deferred to the later subscription architecture decision and canonical contracts.
+
 ## Context
 
 Kitchen spaces are time-based resources that must prevent double-booking. The system needs to ensure that a kitchen space cannot be booked for overlapping time periods, even when multiple chefs try to book simultaneously.
@@ -137,6 +139,117 @@ cleaning_duration_minutes: 30 (configurable per kitchen)
 occupancy_end_at: 12:30 (space available for next booking)
 ```
 
+## Additive Amendment — Subscription-Funded and Recurring KitchenBookings
+
+### Scope of This Amendment
+
+ADR-007 remains authoritative specifically for concrete Kitchen Space occupancy, EquipmentRental capacity, and concrete KitchenBooking concurrency, including subscription-funded bookings and materialized recurring occurrences. It is not generalized into a universal scheduling ADR; Dietitian Appointment concurrency is outside its scope and requires its own architecture decision.
+
+The later Kitchen-subscription ADR owns `KitchenSubscriptionOffer`, `ChefKitchenSubscription`, `KitchenEntitlementCycle`, recurrence rules and materialization architecture, subscription billing and grace, rollover, renewal, and entitlement policy. ADR-007 governs only the concurrency and atomicity boundary when those workflows create, hold, confirm, replace, or cancel concrete KitchenBookings and associated Equipment allocations.
+
+### Entitlement and Physical Capacity Are Independent
+
+Kitchen-subscription entitlement answers whether a Chef has commercial entitlement available to request or consume a booking. ADR-007 answers whether the concrete physical Kitchen Space and requested EquipmentRental capacity can actually be reserved.
+
+```text
+ENTITLEMENT AVAILABLE != BOOKING AVAILABLE
+BOOKING PHYSICALLY AVAILABLE != SUBSCRIPTION ENTITLEMENT AVAILABLE
+```
+
+Having entitlement does not guarantee a calendar slot. A subscription-funded KitchenBooking still must satisfy normal Space occupancy, operating-rule, cleaning-occupancy, EquipmentRental-capacity, hold/confirmation, and concurrency requirements. Conversely, physically available Space or equipment does not establish that sufficient subscription entitlement exists.
+
+### Atomic Subscription-Funded Reservation
+
+When a concrete KitchenBooking is funded or authorized by a `ChefKitchenSubscription` entitlement cycle, the successful local reservation transaction must safely coordinate:
+
+1. Subscription entitlement validation and reservation or consumption.
+2. Space capacity reservation under the accepted half-open GiST/exclusion model.
+3. EquipmentRental capacity reservation under the accepted deterministic row-lock model where equipment is requested.
+4. The KitchenBooking transition to `HELD` or `CONFIRMED`.
+
+The operation must establish one coherent booking state or leave no partial committed entitlement or physical-capacity result. It must not commit Space without required entitlement state, entitlement while the booking fails, partial Equipment capacity while Space fails, or Space while required Equipment capacity fails. The exact entitlement persistence layout belongs to the later subscription ADR and canonical ERD.
+
+Subscription entitlement must be protected against concurrent double spend using a database-enforceable or database-serialized strategy appropriate to the final entitlement representation. This may include locking the relevant entitlement-cycle or balance row, or another deterministic database concurrency mechanism. A plain read-balance, application-check, and later-update sequence without concurrency protection is not sufficient. The selected entitlement strategy must compose atomically with concrete KitchenBooking and EquipmentRental reservation.
+
+### Entitlement-Delta Replacement
+
+A booking replacement evaluates effective entitlement for that replacement operation as:
+
+```text
+effective entitlement available
+= normally available entitlement
+ + entitlement released by the booking being replaced
+   within the applicable entitlement cycle
+```
+
+For example, with 40 hours allocated, zero ordinarily free hours, and an existing 4-hour booking:
+
+```text
+old 4h -> new 4h: additional entitlement required = 0h
+old 4h -> new 6h: additional entitlement required = 2h
+old 4h -> new 3h: 1h becomes releasable under the entitlement policy
+```
+
+The exact commercial definition of entitlement units remains owned by the subscription offer and later subscription ADR.
+
+A replacement is not implemented as cancellation of the old booking followed by creation of an unrelated new booking. The original confirmed KitchenBooking remains authoritative and capacity-consuming until the replacement passes all required checks and the replacement transition commits.
+
+A failed replacement leaves all of the following unchanged or absent:
+
+- Original KitchenBooking and its confirmed state.
+- Original Space occupancy.
+- Original Equipment allocations.
+- Original entitlement allocation.
+- No orphan replacement entitlement reservation.
+- No orphan replacement Space or Equipment capacity.
+
+Conceptually, replacement coordinates validation and locking of the existing booking and applicable entitlement context, old and new entitlement consumption, per-cycle entitlement delta, new Space eligibility and availability, normal ADR-007 Space protection, deterministic locking and validation of requested EquipmentRentals, additional entitlement reservation where required, establishment of replacement state, release of original Space and obsolete Equipment capacity, and release or transfer of original entitlement allocation in one coherent local outcome.
+
+This conceptual description is not a mandatory physical statement order. Detailed design must define and test deterministic lock acquisition ordering across the existing KitchenBooking, entitlement context, new Space reservation, and all EquipmentRental rows. Existing deterministic identifier ordering for multiple EquipmentRental locks remains mandatory. Bounded internal retry may handle database deadlock errors while preserving idempotency; advisory locks remain non-default, and `SERIALIZABLE` remains a valid alternative rather than the default merely for convenience.
+
+### Approval-Required Replacement
+
+When the applicable offer uses `ENTREPRENEUR_APPROVAL_REQUIRED`, the original booking remains confirmed and protected while replacement approval is pending. A proposed replacement may hold new physical capacity using the existing `HELD` semantics. Temporary coexistence of original and proposed physical reservations must not double-charge entitlement merely because both are capacity-consuming during approval.
+
+The replacement must carry explicit context linking it to the original booking, or equivalent evidence. Rejection or expiry releases only the proposed replacement hold and associated proposed equipment capacity and leaves the original booking and entitlement unchanged. Approval atomically establishes the replacement and releases the original booking's Space, obsolete Equipment allocations, and applicable entitlement allocation under the approved workflow. This ADR does not prescribe a replacement-request table.
+
+### Cross-Entitlement-Cycle and Space Moves
+
+Entitlement delta is calculated per entitlement cycle, not globally. A move from a 4-hour September booking to a 4-hour October booking releases the applicable September entitlement and independently requires 4 hours of available October entitlement. If October has insufficient entitlement, the move fails and the September booking remains unchanged. Old-cycle entitlement must not be borrowed to bypass new-cycle rules unless a separately approved rollover or transfer policy allows it; rollover is outside ADR-007.
+
+A replacement may move between Spaces that the subscription offer defines as eligible. Even when entitlement delta is zero, the new Space must independently pass normal occupancy checks, requested EquipmentRental capacity checks, and subscription-offer Space eligibility. Entitlement equality does not imply physical substitutability. Future weighted Space credits are outside this ADR.
+
+### Equipment Changes During Replacement
+
+When replacement changes EquipmentRentals, the transaction uses the existing authoritative `EquipmentRental` capacity model and deterministic EquipmentRental locking order. Original allocations remain valid until replacement succeeds. A rejected or expired proposed replacement releases only its proposed equipment hold. A successful replacement releases obsolete original allocations and commits all new allocations atomically with the booking transition. Partial equipment success is prohibited.
+
+`EquipmentCatalogItem` remains reusable master/reference data, `SpaceEquipment` remains the actual included-equipment association, and `EquipmentRental` remains the additional per-Space commercial and capacity-bearing resource with authoritative `quantity_available`. This amendment does not introduce cross-Space shared equipment; such a pool still requires a separate architecture decision.
+
+### Recurring Booking Materialization
+
+A recurring Kitchen booking rule is not physical capacity and does not directly reserve an unbounded date range merely by existing. Only materialized or otherwise explicitly reserved occurrences consume physical capacity. Materialization is bounded by the subscription booking horizon and occurrence policy owned elsewhere.
+
+Every materialized recurring occurrence becomes an ordinary concrete KitchenBooking and independently passes the complete ADR-007 Space, cleaning, hold/confirmation, EquipmentRental, atomicity, and entitlement protections.
+
+Recurring materialization may apply one of these policy outcomes:
+
+- `ALL_OR_NOTHING`: failure of any required occurrence in the requested materialization batch must not leave unintended partially accepted results for that all-or-nothing operation.
+- `BEST_AVAILABLE`: each occurrence may independently succeed or fail, but every successful occurrence receives the full ADR-007 concurrency and entitlement guarantees.
+
+This ADR does not require one large transaction spanning months of future bookings. Exact batch transaction size and long-horizon materialization strategy belong to the later subscription ADR and detailed architecture.
+
+For `THIS_OCCURRENCE`, only the selected materialized KitchenBooking is replaced. For `THIS_AND_FUTURE`, the recurrence definition may change and already-materialized future occurrences may require replacement or reconciliation. Recurrence semantics remain owned by the subscription ADR, while each affected concrete booking obeys the atomic replacement rules here. Original affected bookings remain protected until their individual replacement outcome is established; entitlement and physical capacity must not be double-spent, failures follow the selected series-modification policy, and history is not silently deleted. `THIS_AND_FUTURE` is not required to execute as one giant database transaction.
+
+### Cancellation and Cleaning
+
+Cancellation of a subscription-funded KitchenBooking releases active Space and Equipment capacity according to the existing booking lifecycle. Commercial entitlement restoration or forfeiture follows the captured Kitchen-subscription cancellation policy; ADR-007 does not define a restoration percentage. Capacity release and the entitlement consequence must commit without an internally contradictory state. For Entrepreneur/provider-caused cancellation, applicable Chef entitlement is restored and the Chef is not penalized; refund and remediation economics remain outside ADR-007.
+
+Required cleaning time remains part of `occupancy_end_at` and the physical half-open conflict interval where applicable. A `KitchenSubscriptionOffer` may separately determine whether cleaning consumes entitlement, is commercially included, or creates a separate charge. Those commercial decisions do not shorten or otherwise alter the physical occupancy interval used by ADR-007 concurrency protection.
+
+### Timezone Dependency
+
+Recurring Kitchen rules are interpreted using the authoritative Kitchen IANA timezone according to ADR-011. Once materialized, every KitchenBooking resolves to concrete real instants, and ADR-007 applies its half-open ranges and capacity rules to those instants. DST and recurrence interpretation remain owned by ADR-011 and the subscription recurrence architecture rather than being duplicated here.
+
 ## Consequences
 
 ### Positive
@@ -145,12 +258,16 @@ occupancy_end_at: 12:30 (space available for next booking)
 - Equipment reservations competing for the same EquipmentRental serialize on one authoritative relational row
 - Equipment capacity validation and all requested allocations commit atomically with the capacity-reserving booking transition
 - Cleaning time is explicitly modeled
+- Subscription entitlement and physical capacity compose without allowing partial reservation or entitlement double spend
+- Atomic replacement protects an existing booking until a valid replacement succeeds
+- Recurring rules remain non-capacity facts while each materialized occurrence receives full concurrency protection
 
 ### Negative
 - Requires `btree_gist` extension
 - Generated column adds storage overhead
 - Equipment reservation requires deterministic row-lock ordering and careful transaction management
-- Complex to modify booking times (may need to cancel and rebook)
+- Subscription-funded replacement requires coordinated locking across booking, entitlement, Space, and Equipment resources
+- Series materialization and modification require explicit batch outcome and failure-reporting policy
 - Booking holds must expire deterministically; do not rely on advisory locks unless load testing later proves they are necessary.
 
 ## Implementation Notes
@@ -180,6 +297,16 @@ Future integration tests must use real PostgreSQL, such as through Testcontainer
 8. An EquipmentRental belonging to a different Kitchen Space is rejected.
 9. An overlap only within mandatory cleaning occupancy still conflicts.
 10. An idempotent retry creates no duplicate allocation.
+11. Concurrent subscription-funded requests cannot spend the same entitlement balance twice.
+12. With zero ordinarily free entitlement, replacing a same-cycle 4-hour booking with another 4-hour booking requires zero additional entitlement and preserves the original until commit.
+13. Replacing a same-cycle 4-hour booking with a 6-hour booking requires only the 2-hour delta.
+14. Failed replacement preserves the original booking, Space occupancy, Equipment allocations, and entitlement allocation and leaves no orphan proposed capacity.
+15. Cross-cycle replacement independently validates new-cycle entitlement and preserves the old-cycle booking when the new cycle lacks capacity.
+16. Approval-required replacement expiry releases proposed holds without changing the original booking.
+17. Equipment changes during replacement commit all-or-nothing using deterministic EquipmentRental lock ordering.
+18. A recurrence rule alone reserves no physical capacity; every materialized occurrence independently passes ADR-007.
+19. `ALL_OR_NOTHING` materialization leaves no unintended partial batch result, while every `BEST_AVAILABLE` success satisfies full capacity and entitlement protection.
+20. Cleaning commercial treatment never reduces the physical occupancy interval.
 
 ## Alternatives Considered
 

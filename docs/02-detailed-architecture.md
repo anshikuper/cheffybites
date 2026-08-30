@@ -538,7 +538,7 @@ Critical invariant:
 
 Owns:
 
-- One logical Payment per Order under the current checkout model.
+- Logical Payments for approved billable commercial contexts. One concrete food Order has at most one logical Payment under the current checkout model; other approved contexts are not converted into Orders merely to reuse Payment.
 - Payment attempts.
 - Provider-neutral payment initiation results and provider references.
 - Immutable, deduplicated ProviderEvents.
@@ -581,16 +581,15 @@ Exact legal/tax treatment is configurable and externally validated.
 
 Owns:
 
-- Seller payable balances.
-- Payout eligibility.
+- Approved marketplace settlement obligations and balances supplied by the future commercial-obligation policy.
+- Payout lifecycle execution after authoritative future commercial-obligation policy establishes eligibility.
 - Payout batches.
 - Payout status.
 - Payout provider references.
 
-Recipients:
+Potential settlement beneficiaries include approved independent-provider or Organization payees. The service performer, commercial provider, and settlement beneficiary may align but are not assumed to be the same party. One Payout is not required per Chef, ChefOrderGroup, Order, Appointment, Booking, or subscription occurrence.
 
-- Chef.
-- Entrepreneur.
+Marketplace Payout is not employee or contractor payroll. Salary, hourly wage, bonus, incentive, withholding, remittance, and other worker-compensation facts remain outside this module.
 
 ---
 
@@ -791,7 +790,7 @@ Do not use one giant `public` schema containing every domain table without owner
 - Foreign keys: `<entity>_id`.
 - Timestamps: `created_at`, `updated_at`.
 - Version field: `version` for optimistic locking where appropriate.
-- External provider IDs: explicit names, e.g. `stripe_payment_intent_id`.
+- External provider IDs: explicit provider-neutral role names in domain-owned records, e.g. `provider_payment_reference`; provider-adapter evidence may retain provider-native identifiers where required for reconciliation.
 - Money: `amount_minor` + `currency_code`.
 - Status: controlled enum values represented by stable strings or database enum policy decided per module.
 
@@ -849,7 +848,6 @@ erDiagram
     CARTS ||--o| ORDERS : converts_to
     KITCHENS ||--o{ ORDERS : fulfills
     ORDERS ||--o{ CHEF_ORDER_GROUPS : contains
-    CHEF_BUSINESSES ||--o{ CHEF_ORDER_GROUPS : fulfills
     CHEF_ORDER_GROUPS ||--o{ ORDER_ITEMS : contains
     FOOD_LISTINGS ||--o{ ORDER_ITEMS : purchased
     ORDERS ||--o{ ORDER_STATUS_HISTORY : changes
@@ -880,7 +878,6 @@ erDiagram
     ORDERS ||--o{ TAX_LINE_ITEMS : taxed
 
     PAYOUTS ||--o{ PAYOUT_LINES : contains
-    PAYMENT_ALLOCATIONS ||--o{ PAYOUT_LINES : settles
     LEDGER_TRANSACTIONS ||--|{ LEDGER_ENTRIES : contains
 
     ORDERS ||--o| DELIVERIES : may_have
@@ -1133,7 +1130,7 @@ erDiagram
     CHEF_ORDER_GROUPS {
         uuid id PK
         uuid order_id FK
-        uuid chef_business_id FK
+        uuid conceptual_actual_chef_performer_ref
         string status
         bigint subtotal_minor
         bigint discount_minor
@@ -1300,7 +1297,7 @@ erDiagram
         uuid payment_id FK
         uuid order_id FK
         uuid chef_order_group_id FK NULL
-        uuid chef_business_id FK NULL
+        uuid conceptual_commercial_provider_ref NULL
         uuid delivery_id FK NULL
         uuid tax_line_item_id FK NULL
         string allocation_type
@@ -1371,7 +1368,7 @@ erDiagram
     PAYOUT_LINES {
         uuid id PK
         uuid payout_id FK
-        uuid payment_allocation_id FK
+        uuid conceptual_source_obligation_ref
         uuid order_id FK
         uuid chef_order_group_id FK NULL
         uuid kitchen_booking_id FK NULL
@@ -1487,6 +1484,8 @@ erDiagram
 
 This embedded ERD is an integrated explanatory view; [`03-database-erd.md`](03-database-erd.md) remains canonical for exact persistence representation. `KITCHENS.iana_timezone_id` is the authoritative IANA timezone identity for Kitchen business rules. Location geography does not become a competing source of Kitchen business-time semantics, and dependent records such as KitchenBooking resolve those semantics through their owning Kitchen rather than copying authoritative timezone configuration.
 
+Within this orientation aid, `CHEF_ORDER_GROUPS.conceptual_actual_chef_performer_ref`, `PAYMENT_ALLOCATIONS.conceptual_commercial_provider_ref`, and `PAYOUT_LINES.conceptual_source_obligation_ref` are conceptual placeholders, not selected column or foreign-key names. Proposed ADR-017, future ADR-020, and the canonical ERD must choose their respective typed relationships. Actual-Chef identity must not be replaced by a common employer Organization, commercial provider, settlement beneficiary, connected account, or overloaded Chef Business identity. Likewise, the displayed Order foreign keys on Payment, PaymentAllocation, and Refund illustrate the current food-Order slice only; they are not a universal multi-context persistence decision. Exact typed relationships for other approved billable contexts remain future ADR-020 and canonical-ERD work, without an unconstrained `source_type + source_uuid` relation.
+
 Recurring Kitchen operating hours, Kitchen/Chef availability, and similar schedules retain business-local date/time semantics interpreted with the owning Kitchen's IANA timezone. Concrete bookings and materialized availability occurrences use resolved real instants represented by `TIMESTAMPTZ`, including booking `start_at`, `cooking_end_at`, `occupancy_end_at`, and hold expiry where applicable. PostgreSQL `TIMESTAMPTZ` identifies an instant; it does not preserve the original IANA timezone, original textual offset, or recurring local schedule semantics. An offset-free API timestamp for a resolved instant must not be silently interpreted as UTC, and `LocalDateTime` alone is not an authoritative resolved cross-system instant.
 
 When resolving business-local input, nonexistent local times in a daylight-saving gap are rejected rather than guessed or shifted. Ambiguous local times in a daylight-saving overlap require sufficient offset disambiguation or are rejected. A later Kitchen timezone configuration change affects future local schedule interpretation but does not rewrite historical bookings or already-materialized occurrence instants.
@@ -1513,35 +1512,51 @@ Every Chef Order Group must refer to a Chef who is authorized to fulfill food fr
 
 ## 13.3 One Chef Order Group Per Chef Per Order
 
-Unique constraint:
+Conceptual invariant:
 
 ```text
-UNIQUE(order_id, chef_business_id)
+ONE ChefOrderGroup
+per
+ONE concrete Order
++
+ONE durable actual-Chef performer / operational Chef identity
 ```
 
-## 13.4 Chef Order Group Is the Financial Allocation Boundary
+The exact performer foreign key and database uniqueness constraint remain deferred to Proposed ADR-017 reconciliation and the canonical ERD. A Chef-specific business or storefront identity may remain legitimate, but it must not be overloaded as the actual performer when it instead identifies a common employer Organization, commercial provider, settlement beneficiary, or payee.
 
-Every food-order `PAYOUT_LINE_ITEM` must reference the originating `chef_order_group_id`.
+For example, if ABC Food Group employs Ravi and Maria and commercially supplies Order O1, O1 still contains ChefOrderGroup Ravi and ChefOrderGroup Maria with their respective OrderItems. ABC Food Group may be the shared commercial provider and settlement beneficiary; that common identity must not collapse the operational groups. Every OrderItem belongs to exactly one ChefOrderGroup. Every group uses its parent Order's one immutable physical Kitchen context and cannot establish another Kitchen.
+
+## 13.4 Chef Order Group Is a Financial Source and Traceability Boundary
+
+ChefOrderGroup preserves actual-performer source/reference evidence for food pricing, Promotions, refunds, quality, reporting, reconciliation, and settlement traceability where applicable. It does not thereby become the commercial provider, settlement beneficiary, Payout recipient, connected account, Payable, PaymentAllocation, or Payout aggregate.
 
 This allows the system to answer, without reconstructing history from Order Items:
 
-- Which orders generated a Chef payout?
-- Which Chef Order Group contributed to a payout?
+- Which actual Chef participated in each Order?
+- Which ChefOrderGroup contributed source evidence to a commercial obligation or later PayoutLine where applicable?
 - How much gross revenue came from each Chef Order Group?
-- What promotion/fee/refund adjustments affected that Chef?
-- Which payout line settled that Chef Order Group?
+- What Promotion/refund/quality effects referenced that Chef's participation?
+- Which financial evidence retained the applicable ChefOrderGroup traceability?
 
-Recommended constraints:
+Multiple ChefOrderGroups may contribute to one Organization commercial obligation and eventual settlement. One ChefOrderGroup does not require one external beneficiary, Payout, or connected account, and no uniqueness rule tying one PayoutLine to each ChefOrderGroup is established here. An independent Chef arrangement remains supported when Ravi is the performer and Ravi Foods Organization is the commercial provider and settlement beneficiary. The same Order architecture supports an Organization-employed Chef. Cheffy Operations uses this ordinary Organization-provider model without a provider-specific branch.
 
 ```text
-PAYOUT_LINE_ITEMS.chef_order_group_id IS NOT NULL
-for FOOD_ORDER payout line types
+SERVICE PERFORMER
+!= COMMERCIAL PROVIDER
+!= SETTLEMENT BENEFICIARY
 
-UNIQUE(payout_id, chef_order_group_id)
-for one settlement run
+CHEFORDERGROUP
+!= PAYOUT RECIPIENT
+!= CONNECTED ACCOUNT
+!= PAYABLE
+
+MARKETPLACE SETTLEMENT
+!= EMPLOYEE / CONTRACTOR PAYROLL
 ```
 
-## 13.4 Unique Promo Redemption
+The exact generalized commercial-obligation, source, earning-recognition, settlement-beneficiary, and payout-eligibility relationships remain future ADR-020 and canonical-ERD work. Cheffy does not model an external Organization's salary, hourly wage, bonus, sales incentive, contractor compensation, withholding, remittance, or other payroll merely because performer-level evidence exists.
+
+## 13.5 Unique Promo Redemption
 
 At most one customer-entered promo code may be active or successfully redeemed for one Order checkout. A specific customer may successfully redeem a specific promo code at most once. PromoCodeRedemption uses `RESERVED → REDEEMED` and `RESERVED → RELEASED`; only `RESERVED` and `REDEEMED` consume per-customer and optional global capacity. A released attempt remains historical but permits a new attempt.
 
@@ -1553,7 +1568,7 @@ The current flow creates the Order before payment, so the redemption references 
 
 PromotionApplication and immutable calculation snapshots remain distinct from redemption usage. Automatic promotions create no PromoCodeRedemption and leave `promo_code_id` null. Order- and Delivery-scope applications may leave `chef_order_group_id` null; non-item applications leave `order_item_id` null. A code-backed application may reference its nullable `promo_code_redemption_id`. Full and partial refunds create new adjustment evidence and never release a redeemed code or restore eligibility.
 
-## 13.5 Money
+## 13.6 Money
 
 Persist integer minor units:
 
@@ -1562,7 +1577,7 @@ amount_minor BIGINT
 currency_code CHAR(3)
 ```
 
-## 13.6 Optimistic Locking
+## 13.7 Optimistic Locking
 
 Use `version` on:
 
@@ -1676,6 +1691,8 @@ Chef promotions operate within a Chef Order Group.
 
 Chef A promotions never use Chef B items, and Chef B promotions never use Chef A items.
 
+Accepted ADR-006 owns typed Promotion owner and target identity, including an authorized Organization owner and domain-aware Organization target; ADR-014 owns evaluation, calculation scope, benefit, and funding behavior. An Organization-wide policy may evaluate qualifying offerings across separate ChefOrderGroups, and an Organization-owned Promotion may target only one Chef's FoodListings. Promotion owner, target, ChefOrderGroup calculation scope, actual performer, commercial provider, settlement beneficiary, and funding source remain distinct. The Chef performer does not personally fund a Promotion merely because that ChefOrderGroup is the calculation scope, and Promotion economics do not become employee payroll.
+
 ## 16.2 Promotion Qualifying Basis
 
 Group-level promotions must explicitly declare a qualifying basis:
@@ -1729,7 +1746,8 @@ The pricing result must preserve promotion applications, rejected promotions, qu
   "subtotalMinor": 11200,
   "chefGroups": [
     {
-      "chefBusinessId": "uuid",
+      "chefOrderGroupId": "uuid",
+      "actualChefPerformerRef": "conceptual-reference",
       "subtotalMinor": 5000,
       "discountMinor": 1000,
       "netMinor": 4000,
@@ -1889,9 +1907,11 @@ Provider webhooks must:
 
 # 20. Payment and Payout Architecture
 
-`Payment` is the Financial domain's logical customer payment for one Order. The current checkout model permits at most one Payment per Order and does not support split tender. A Payment may own multiple PaymentAttempts; each attempt is one retryable provider interaction, not another logical Payment. The provider-neutral `PaymentGateway` returns `PaymentInitiationResult`, and persistence uses generic `provider_payment_reference` terminology rather than a provider-specific payment-object name.
+`Payment` is the Financial domain's logical payment for one applicable billable commercial context. For food, that context is one concrete Order: the current food checkout model permits at most one logical Payment per Order and does not support food split tender. Other approved contexts—including Kitchen Booking, separately billable Equipment Rental, Dietitian Appointment/consultation, Meal Subscription billing cycle, and Kitchen Subscription billing cycle—remain their own domain concepts and must not be converted into Orders merely to reuse Payment. This section does not decide their exact Payment cardinalities.
 
-`PaymentAllocation` is Cheffy's authoritative internal distribution of payment value. Chef proceeds, platform fee, delivery, and tax obligations use type-appropriate relational references. Chef proceeds require ChefOrderGroup and recipient identity; platform, delivery, and tax allocations do not require ChefOrderGroup. Internal allocation does not prove an external connected-account transfer. External settlement is a later provider workflow governed by the approved legal and connected-account model.
+A Payment may own multiple PaymentAttempts; each attempt is one retryable provider interaction, not another logical Payment. The provider-neutral `PaymentGateway` returns `PaymentInitiationResult`, and persistence uses generic `provider_payment_reference` terminology rather than a provider-specific payment-object name. Exact typed Payment-to-context relationships remain future ADR-020 and canonical-ERD work; this architecture does not establish a universal arbitrary `source_type + source_uuid` relationship.
+
+`PaymentAllocation` is Cheffy's internal payment-side logical distribution/reference. For food it may retain Order, ChefOrderGroup, delivery, tax, and other source-level traceability where applicable. It is not earning recognition, payout eligibility, an external transfer, a connected-account routing instruction, a LedgerEntry, or a Payout. Multiple ChefOrderGroups may contribute evidence to one Organization commercial obligation. Exact generalized obligation/allocation structure remains future ADR-020 work.
 
 ```mermaid
 sequenceDiagram
@@ -1900,8 +1920,8 @@ sequenceDiagram
     participant P as Pricing
     participant S as Payment Provider
     participant L as Ledger
-    participant H as Chef
-    participant E as Entrepreneur
+    participant F as Financial
+    participant B as Approved Beneficiary
 
     C->>API: Checkout
     API->>P: Calculate final price
@@ -1911,18 +1931,32 @@ sequenceDiagram
     API->>L: Record Payment, internal allocations, and balanced posting
     API-->>C: Order paid
 
-    Note over H,E: Settlement occurs after configured eligibility period
-    L->>H: Chef payable
-    L->>E: Entrepreneur payable
+    Note over F,B: Recognition and eligibility are distinct later facts
+    F->>B: Execute approved marketplace settlement when eligible
 ```
 
-For one Kitchen Order containing multiple Chefs, the financial allocation must retain separate Chef payable amounts while charging the customer once.
+For one Kitchen Order containing multiple actual Chefs, payment-side evidence retains ChefOrderGroup source traceability while charging the customer once. It does not require a separate Chef payable or external beneficiary for every group. ChefOrderGroup Ravi and ChefOrderGroup Maria may both contribute to one ABC Food Group commercial obligation and approved Organization settlement.
 
-The authoritative operational-to-financial relationship for Chef proceeds is: **Order → ChefOrderGroup → PaymentAllocation → PayoutLine → Payout**.
+The architecture supports both an independent arrangement—Chef Ravi performs while Ravi Foods Organization is commercial provider and settlement beneficiary—and an Organization-employed arrangement in which ABC Food Group is provider/beneficiary for work performed by Ravi and Maria. Cheffy Operations uses the same ordinary Organization-provider path; no `provider == CHEFFY` branch is introduced.
 
-A Chef payout must be traceable to the exact Chef Order Groups that generated the payable amount. A payout may contain multiple payout line items from multiple completed orders, but each Chef Order Group allocation must remain separately identifiable for reporting, refunds, reconciliation, and dispute handling.
+Refund and Payout remain Financial-owned. A food Refund may retain Payment, Order, ChefOrderGroup, OrderItem, PricingSnapshot, and Promotion evidence as applicable. Other approved billable domains may produce refund/remediation facts without a fake food Order. Exact generalized Refund relationships remain future ADR-020 and canonical-ERD work. A Payout may aggregate multiple eligible commercial obligations and is not required per Chef, ChefOrderGroup, Order, Appointment, Booking, or subscription occurrence.
 
-The operational payment architecture is one customer Payment, internal allocation, and automated provider-assisted settlement workflows. The legal Merchant-of-Record, tax/remittance, chargeback/refund liability, connected-account topology, reserve, negative-balance, and country settlement/risk decisions remain unresolved and must be finalized before production.
+The financial stages remain distinct:
+
+```text
+PAYMENT RECEIVED
+!= EARNING RECOGNIZED
+!= PAYOUT ELIGIBLE
+!= EXTERNAL PAYOUT COMPLETED
+```
+
+The operational payment architecture uses logical Payment, retryable PaymentAttempts, internal PaymentAllocation, and automated provider-assisted settlement workflows. Marketplace settlement is not employee or contractor payroll. If ABC Food Group is the commercial provider, the marketplace obligation may belong to ABC Food Group; Ravi's salary, hourly wage, bonus, sales incentive, contractor compensation, withholding, and remittance do not become a Chef payout redirected to ABC. The legal Merchant-of-Record, tax/remittance, chargeback/refund liability, connected-account topology, reserve, negative-balance, and country settlement/risk decisions remain unresolved and must be finalized before production.
+
+Where legally and professionally permitted, a Dietitian Appointment may identify Dietitian D as actual practitioner while a Dietitian business, clinic, or Organization is the commercial provider and approved beneficiary. Exact professional/Organization authorization and engagement are governed by Proposed ADR-017. Current Dietitian economics are limited to legitimate professional-service payment, Promotion, Platform subsidy/fee, refund/remediation, earning, and settlement; no food-sale, Meal Subscription, referral, Chef-proceeds deduction, or Chef-purchase attribution is introduced.
+
+For Kitchen Booking and Kitchen Subscription commerce, the authorized Kitchen operating Organization may be the commercial provider even when another party owns the property. `KITCHEN PROPERTY OWNER != KITCHEN COMMERCIAL / OPERATING ORGANIZATION`; lease accounting and landlord payments are outside this architecture.
+
+MealSubscription remains distinct from Order, and a MealFulfillmentOccurrence does not become an Order until the owning future architecture materializes or links a concrete food fulfillment through the normal one-Kitchen Order model. Billing success does not establish full provider earning, and an Organization provider does not erase the actual occurrence-level Chef. Kitchen Subscription remains distinct from KitchenBooking; entitlement is not a calendar reservation or a guarantee of an arbitrary slot. Exact subscription and occurrence semantics remain future ADR-019, and exact earning/remediation policy remains ADR-020 after ADR-019.
 
 Stripe Connect is a likely provider baseline, but the architecture remains provider-neutral until legal/accounting sign-off.
 
@@ -1930,7 +1964,7 @@ Stripe Connect is a likely provider baseline, but the architecture remains provi
 
 # 21. Chef Operational, Financial Reference, and Order History Model
 
-`ChefOrderGroup` is the first-class Chef operational boundary, Chef promotion boundary, financial allocation reference, refund allocation reference, payout traceability boundary, and reporting boundary for one Chef's portion of an Order. The financial domain owns the Payment, Refund, Payout, and Ledger aggregates. The parent Order owns final fulfillment, including delivery state.
+`ChefOrderGroup` is the first-class actual-Chef operational boundary, Chef Promotion calculation/reference boundary where applicable, financial source/reference, refund/quality traceability boundary, individual reputation/reference boundary, and reporting boundary for one Chef's portion of one concrete Order. It represents Chef-specific authorization, OrderItems, preparation lifecycle/history, and operational metrics. The financial domain owns Payment, PaymentAllocation, Refund, Payout, LedgerTransaction, and LedgerEntry. The parent Order owns its one physical Kitchen and final pickup/delivery/completion.
 
 ```text
 CUSTOMER ORDER
@@ -1960,19 +1994,13 @@ CUSTOMER ORDER
              ├── Financial Allocation References
              ├── Refund Allocation References
              └── Payout Traceability
-
-ChefOrderGroup
-      │
-      ▼
-PayoutLine
-      │
-      ▼
-Payout
 ```
+
+The common Organization/provider/payee does not merge actual-Chef groups. Every OrderItem belongs to exactly one ChefOrderGroup, and no ChefOrderGroup can establish a Kitchen different from its parent Order. ChefOrderGroup does not own final pickup, delivery, or completion.
 
 ## 21.1 Why ChefOrderGroup Is First-Class
 
-Every Chef Order Group identifies exactly one Chef's portion of one customer Order. It is therefore the authoritative query boundary for:
+Every Chef Order Group identifies exactly one durable actual-Chef performer/operational identity's portion of one customer Order. The exact typed performer foreign key remains Proposed ADR-017/ADR-013 reconciliation and canonical-ERD work. It is therefore the authoritative query boundary for:
 
 - Chef order history.
 - Chef dashboard order counts.
@@ -1982,56 +2010,53 @@ Every Chef Order Group identifies exactly one Chef's portion of one customer Ord
 - Chef financial allocation references.
 - Chef refund allocation references.
 - Chef payout traceability.
+- Chef-specific quality and reputation references.
 - Chef reporting and analytics.
 
 A Chef order-history query should resolve through `ChefOrderGroup`, not by scanning all Orders for a nullable Chef identifier.
 
-Financial records reference `chef_order_group_id` where applicable. This includes payment allocations, refund lines, payout lines, and ledger entries owned by the financial domain. Immutable PromotionSnapshots and the pricing-owned PricingSnapshot preserve historical calculation evidence; any latest-snapshot pointer is a convenience only and is never the historical source of truth. These references do not make ChefOrderGroup the owner of Payment, PaymentAllocation, Refund, Payout, LedgerTransaction, or LedgerEntry.
+Financial records may reference `chef_order_group_id` where applicable for source and traceability evidence. Immutable PromotionSnapshots and the pricing-owned PricingSnapshot preserve historical calculation evidence; any latest-snapshot pointer is a convenience only and is never the historical source of truth. No `FinancialSnapshot` is introduced. These references do not make ChefOrderGroup the owner of Payment, PaymentAllocation, Refund, Payout, LedgerTransaction, or LedgerEntry, and do not make it the commercial provider, settlement beneficiary, Payout recipient, connected account, or Payable.
 
 Conceptually:
 
 ```text
-Chef Business
-    │
+Actual Chef performer Ravi
     └── ChefOrderGroups
-           │
            ├── Order #10001
            ├── Order #10025
-           ├── Order #10087
-           └── Order #10122
+           └── Order #10087
+
+ABC Food Group Organization
+    ├── Commercial provider / approved beneficiary
+    ├── ChefOrderGroup Ravi source evidence
+    └── ChefOrderGroup Maria source evidence
 ```
 
-## 21.2 Payout Allocation Rule
+## 21.2 Commercial-Obligation and Payout Traceability Rule
 
-A Chef payout must never be derived only from the overall Order total. Financial-domain payout calculation must start from allocations that reference the Chef's own ChefOrderGroup, then apply the configured commission, taxes, refunds, adjustments, and settlement rules.
+A marketplace obligation or Payout must never be reconstructed only from the overall Order total. Financial policy uses immutable payment-side, Pricing, Promotion, fulfillment, refund, and source evidence—including ChefOrderGroup references where applicable—then applies the approved commercial-provider, fee, tax, adjustment, recognition, and settlement rules. ChefOrderGroup traceability does not require a Chef-specific payable.
 
 ```text
 ChefOrderGroup
    │
-   ├── Gross food amount
-   ├── Chef promotion impact
-   ├── Applicable tax adjustments
-   ├── Refund/return adjustments
-   ├── Platform commission
-   └── Other approved adjustments
-           │
-           ▼
-      Chef Payable
-           │
-           ▼
-    PayoutLine
-           │
-           ▼
-        Payout
+   └── Actual-performer source / traceability evidence
+           ↓
+Approved commercial-provider obligation (future ADR-020)
+           ↓
+Earning recognition and payout eligibility (future ADR-020)
+           ↓
+Financial-owned Payout / PayoutLine where applicable
 ```
+
+Multiple ChefOrderGroups may contribute to one Organization obligation. One ChefOrderGroup does not imply one external Payout, connected account, beneficiary, or PayoutLine. A Payout may aggregate multiple eligible obligations according to future policy.
 
 ## 21.3 Partial Refund Rule
 
-If an Order Item belonging to Chef A is refunded, only the financial allocation referencing the relevant Chef A ChefOrderGroup is recalculated, plus any shared order-level financial effects that business/tax rules require. The financial domain owns the Refund aggregate and resulting financial records. Chef B and Chef C allocations must remain independently traceable.
+If an OrderItem belonging to Chef A is refunded, the recalculation uses the relevant Order, ChefOrderGroup A, OrderItem, and captured Pricing/Promotion evidence plus any shared Order-level effects required by business and tax rules. The Financial domain owns the Refund aggregate and resulting append-only financial facts. Chef B and Chef C remain independently traceable, but performer-specific traceability does not imply that Chef A is the commercial provider or settlement beneficiary. Non-food billable contexts may create their own Financial refund/remediation facts without being converted into Orders; exact typed generalized relationships remain future ADR-020 and canonical-ERD work.
 
 ## 21.4 Chef Reporting
 
-The Chef dashboard should be able to show:
+The Chef dashboard should be able to show operational and source-attributed metrics. Marketplace earning and Payout fields are shown only when the approved commercial arrangement makes that Chef/independent provider the beneficiary; an employee Chef's payroll is not derived from these fields.
 
 ```text
 Chef A
@@ -2044,10 +2069,12 @@ Chef A
 ├── Sales
 ├── Discounts
 ├── Refunds
-├── Platform Fees
-├── Net Earnings
-├── Pending Payout
-└── Completed Payouts
+├── Quality / Operational Metrics
+└── Where the Chef's provider is the approved beneficiary:
+      ├── Platform Fees
+      ├── Net Marketplace Earnings
+      ├── Pending Payout
+      └── Completed Payouts
 ```
 
 # 21A. Financial Ledger Model
@@ -2066,8 +2093,7 @@ Conceptual entry types:
 
 ```text
 CUSTOMER_CHARGE
-CHEF_REVENUE
-ENTREPRENEUR_REVENUE
+PROVIDER_REVENUE / PROVIDER_EARNING
 PLATFORM_FEE
 DELIVERY_FEE
 TAX_COLLECTED
@@ -2083,13 +2109,75 @@ Rules:
 1. Monetary values use integer minor units and currency codes; floating-point canonical money is prohibited.
 2. Currency remains consistent across a Payment flow's allocations, refunds, payout lines, LedgerTransaction, and LedgerEntries.
 3. Historical PricingSnapshots, FeeLineItems, TaxLineItems, PaymentAllocations, and posted ledger history are immutable evidence.
-4. FeeLineItem is Pricing calculation evidence and TaxLineItem is Tax/Pricing evidence; neither is settlement truth. Settled obligations use PaymentAllocation, PayoutLine where applicable, and ledger postings.
-5. A Delivery fee field is quoted/captured commercial delivery-pricing evidence, not settlement truth; its obligation uses PaymentAllocation and ledger posting.
-6. Every payout traces each PayoutLine to its source payable obligation, normally the applicable PaymentAllocation, and prevents duplicate settlement in the same context.
-7. Every refund references its Payment and Order; RefundLines reference PaymentAllocation, OrderItem, and ChefOrderGroup where applicable. Provider-confirmed amounts may remain null until known, and provider refund references remain generic.
-8. ProviderEvent is immutable inbound evidence with database uniqueness on `(provider_name, provider_event_id)`. Duplicate callbacks cannot duplicate financial state changes, postings, refunds, payouts, or outbox events.
-9. Financial command idempotency keys include operation/key/request-hash semantics; reuse with a different hash is rejected independently of provider idempotency.
-10. Reconciliation compares immutable Cheffy financial truth with provider evidence. Mismatches create auditable investigation/evidence and, where required, new compensating records rather than history mutation.
+4. `PaymentAllocation != LedgerEntry`. PaymentAllocation is payment-side internal distribution/reference evidence and does not establish earning recognition, payout eligibility, external settlement, account classification, or connected-account routing.
+5. FeeLineItem is Pricing calculation evidence and TaxLineItem is Tax/Pricing evidence; neither is settlement truth. Approved obligations and any PayoutLine remain Financial-owned, while ADR-015 owns balanced ledger posting and reconciliation.
+6. A Delivery fee field is quoted/captured commercial delivery-pricing evidence, not settlement truth.
+7. Every PayoutLine traces to its approved source commercial obligation and prevents duplicate settlement in the same applicable context. The exact typed obligation relationship remains future ADR-020 work; one Payout may aggregate multiple eligible obligations.
+8. Every Refund references its Payment and the applicable billable commercial context. Food RefundLines may reference PaymentAllocation, OrderItem, and ChefOrderGroup where applicable; non-food contexts are not forced into Order. Provider-confirmed amounts may remain null until known, and provider refund references remain generic. Exact typed generalized Refund relationships remain future ADR-020 and canonical-ERD work.
+9. ProviderEvent is immutable inbound evidence with database uniqueness on `(provider_name, provider_event_id)`. Duplicate callbacks cannot duplicate financial state changes, postings, refunds, payouts, or outbox events.
+10. Financial command idempotency keys include operation/key/request-hash semantics; reuse with a different hash is rejected independently of provider idempotency.
+11. Reconciliation compares immutable Cheffy financial truth with provider evidence. Mismatches create auditable investigation/evidence and, where required, new compensating records rather than history mutation.
+
+The account-code examples above are conceptual classifications, not a final chart of accounts or a statement that the actual service performer is always the earning or payout beneficiary. No `FinancialSnapshot`, universal Payable aggregate, exact generalized Financial schema, arbitrary polymorphic source relationship, employee payroll model, or connected-account topology is introduced here.
+
+---
+
+# 21B. Organization-Operated Supply and Adjacent Commercial Domains
+
+This section records only the integrated architecture boundaries needed to keep the current food, Payment, Promotion, and Financial model extensible. It does not select persistence, API, event, or implementation detail for domains whose owning decisions remain future work.
+
+## 21B.1 Organization, Performer, Provider, and Payee
+
+Organization is a reusable business/legal/operating boundary, not merely an administrative group. An authorized Organization may operate a Kitchen, manage staff and offerings, act as commercial provider, and be the approved settlement beneficiary. These roles remain separate from the individual professional who performs the service:
+
+```text
+ACTUAL SERVICE PERFORMER
+!= COMMERCIAL PROVIDER
+!= SETTLEMENT BENEFICIARY / PAYEE
+```
+
+An independent Chef, an Organization employing or engaging multiple Chefs, and a Cheffy Operations Organization use the same ordinary Organization, authorization, Kitchen, ChefOrderGroup, Promotion, Payment, settlement, review, and audit architecture. Cheffy Operations is a temporary supply-bootstrap participant, not a special provider type; no `if organization == CHEFFY` behavior is permitted. A later exit from direct supply must not require redesign of these boundaries. Employee or contractor compensation remains outside marketplace Payment/Payout.
+
+Kitchen property ownership and commercial operating authority may differ. The Organization authorized to operate and commercially supply from a Kitchen may be the marketplace provider even when another party owns the property. Exact operating-right, professional-engagement, generalized provider/payee, and worker-compensation representations remain deferred to their owning decisions and canonical contracts.
+
+## 21B.2 Dietitian Professional-Service Boundary
+
+Dietitian is a first-class professional actor distinct from Chef, even when one authenticated User has both roles. One practicing user has one individual `DietitianProfessionalProfile`; a clinic or other Organization does not replace the actual practicing Dietitian on a professional service. Credential evidence is private, self-attested evidence must not be presented as independently verified, and collecting diagnoses, medications, laboratory results, clinical notes, or similarly sensitive clinical records is not an assumed MVP capability.
+
+The professional-service architecture keeps these concepts distinct:
+
+```text
+DietitianProfessionalProfile
+DietitianClientEngagement
+ConsultationOffering + explicitly offered availability
+DietitianAppointment
+DietitianMealPlan
+```
+
+Customer/Dietitian engagement is many-to-many. An Appointment remains an individual professional-service and billing unit and identifies the actual Dietitian even when an approved clinic/Organization is commercial provider or settlement beneficiary. Professional identity, credentials, jurisdiction eligibility, Professional↔Organization authorization/engagement, and historical professional attribution are governed by Proposed ADR-017. Dietitian engagement, appointment scheduling, and online meeting provisioning remain future ADR-018 and canonical-contract work.
+
+`DietitianMealPlan` is private professional guidance. A Customer may authorize selected structured requirements for marketplace discovery or FoodRequest creation, but the full plan or clinical/professional record is not automatically exposed to Chefs. A Dietitian recommendation does not select a Chef, transfer ownership of a Chef offering, create preferred marketplace status, or create food-sale, Chef-purchase, referral, or Meal Subscription commission.
+
+## 21B.3 Chef Meal Plan and Subscription Boundaries
+
+`ChefMealPlan` is a versioned Chef-owned commercial catalog offering composed from ordinary FoodListings. It is distinct from both private `DietitianMealPlan` guidance and a Customer `MealSubscription`. Subscription commitment, billing, renewal, pause, termination, and occurrence policy belong to the subscription offer and accepted subscription terms rather than to the core ChefMealPlan identity.
+
+```text
+ChefMealPlan != MealSubscriptionOffer != MealSubscription
+KitchenSubscriptionOffer != ChefKitchenSubscription != KitchenBooking
+```
+
+A MealSubscription is not an Order. A requested or planned `MealFulfillmentOccurrence` is not a concrete Order and must not create a ChefOrderGroup prematurely. When the owning future architecture materializes or links a concrete food Order, that Order uses the normal one-Kitchen invariant, actual-Chef ChefOrderGroups, preparation, pickup/delivery, Pricing, Promotion, refund, and financial traceability. Subscription billing success does not by itself establish full provider earning.
+
+A ChefKitchenSubscription grants governed entitlement to request/reserve eligible Kitchen capacity; it is not a KitchenBooking and does not guarantee an arbitrary calendar slot. Every concrete reservation still materializes as a normal concurrency-safe KitchenBooking, including cleaning and equipment capacity. Pausing or terminating a subscription remains distinct from cancelling one concrete Booking.
+
+Professional identity, credentials, jurisdiction eligibility, Professional↔Organization authorization/engagement, and historical professional attribution are governed by Proposed ADR-017 — Professional Identity, Credentials and Jurisdiction Eligibility.
+
+Dietitian engagement, appointment scheduling, and online meeting provisioning remain future ADR-018 — Dietitian Engagement, Appointment Scheduling and Online Meeting Provisioning.
+
+Accepted ADR-006 continues to own typed Promotion owner/target semantics and relational-integrity direction, while Proposed ADR-014 owns Promotion evaluation, domains, scopes, compatibility, benefits, funding, application, and redemption. Resulting commercial obligations, earnings, and payout-eligibility consequences remain with future ADR-020; no additional Promotion ADR is reserved.
+
+Exact subscription, entitlement, and materialized-occurrence architecture remains future ADR-019 — Subscription, Entitlement and Materialized Occurrence Architecture. Generalized commercial obligations, provider earning recognition, unfulfilled value, Platform fee/subsidy and Promotion-funded commercial consequences, settlement beneficiaries, payout eligibility, and typed Financial source relationships remain future ADR-020 — Commercial Obligations, Earning Recognition and Payable-Source Financial Model. ADR-019 precedes ADR-020 because the commercial model depends on the subscription billing, entitlement, fulfillment/occurrence, unused-entitlement, and provider-non-performance semantics established by ADR-019. None of these future decisions may collapse all commercial contexts into Order, create an unconstrained polymorphic financial source, or treat marketplace settlement as payroll.
 
 ---
 
@@ -2377,7 +2465,8 @@ Response:
   },
   "payment": {
     "paymentId": "uuid",
-    "clientSecret": "provider-generated client secret"
+    "provider": "STRIPE",
+    "initiationToken": "provider-generated opaque client token"
   }
 }
 ```
@@ -2590,7 +2679,7 @@ Response:
   "chefOrderGroups": [
     {
       "id": "uuid",
-      "chefBusinessId": "uuid",
+      "actualChefPerformerRef": "conceptual-reference",
       "status": "PENDING_ACCEPTANCE",
       "subtotalMinor": 5000,
       "discountMinor": 1000,
@@ -3314,6 +3403,18 @@ The standalone files under `docs/adr/` are the canonical ADR registry. ADR statu
 - ADR-013 — ChefOrderGroup Aggregate + Financial Boundary
 - ADR-014 — Promotion Engine
 - ADR-015 — Financial Ledger / Reconciliation
+- ADR-017 — Professional Identity, Credentials and Jurisdiction Eligibility
+
+## Required Future Decisions Not Yet Created
+
+- ADR-018 — Dietitian Engagement, Appointment Scheduling and Online Meeting Provisioning
+- ADR-019 — Subscription, Entitlement and Materialized Occurrence Architecture
+- ADR-020 — Commercial Obligations, Earning Recognition and Payable-Source Financial Model
+- ADR-021 — Authorized Multi-Context Conversation Architecture
+- ADR-022 — Platform-Governed Taxonomy and Reference-Data Lifecycle
+- ADR-023 — Verified-Experience Reviews and Reputation
+
+ADR-018 through ADR-023 are planning references, not standalone ADRs and not Accepted decisions. Their sequence is intentional: ADR-019 precedes ADR-020 because the commercial-obligation and earning-recognition decision depends on subscription billing-cycle, entitlement-cycle, materialized-occurrence, unused-entitlement, and provider-non-performance semantics established by ADR-019. Implementation must not infer unresolved schema, APIs, events, cardinalities, or business policy from this roadmap.
 
 ---
 
@@ -3321,23 +3422,21 @@ The standalone files under `docs/adr/` are the canonical ADR registry. ADR statu
 
 The technical architecture is designed to accommodate these decisions without redesign, but the values must be finalized before production:
 
-1. Merchant of Record.
-2. Platform commission percentages.
-3. Chef payout percentages.
-4. Entrepreneur payout percentages.
-5. Settlement delay.
-6. Customer cancellation windows.
-7. Chef cancellation policy.
-8. Kitchen cancellation policy.
-9. No-show policies.
-10. Delivery provider and coverage.
-11. Delivery fee formula.
-12. Tax registration/responsibility.
-13. Exact Stripe Connect account/charge/transfer configuration.
-14. Refund tax treatment.
-15. Chargeback/dispute policy.
-16. Nearby Chef radius.
-17. Food Request customer-location rule.
+1. Merchant of Record by commercial context and jurisdiction.
+2. Commercial-provider Platform-fee/commission policies, including Organization-operated supply.
+3. Settlement-beneficiary, earning-recognition, payout-eligibility, settlement-delay, reserve, and negative-balance policies.
+4. Employee/contractor compensation and payroll policy outside marketplace settlement.
+5. Customer, provider, Kitchen, professional-service, and subscription cancellation/remediation windows.
+6. Appointment no-show, rescheduling, professional-title, credential, jurisdiction, privacy, and meeting-provider policy.
+7. Meal and Kitchen Subscription commitment, billing, pause, renewal, capacity, provider-failure, and termination policy.
+8. Delivery provider and coverage.
+9. Delivery fee formula.
+10. Tax registration/responsibility by commercial context.
+11. Exact Stripe Connect account/charge/transfer configuration.
+12. Refund and remediation tax treatment.
+13. Chargeback/dispute policy.
+14. Nearby Chef radius.
+15. Food Request customer-location rule.
 
 These should be configuration/policy decisions, not hard-coded assumptions.
 
@@ -3569,7 +3668,7 @@ The first production-ready release should not be considered complete until:
 - At least one delivery provider works if delivery is included in launch scope.
 - Refunds work with promotion recalculation.
 - Payouts are auditable.
-- Every food-order payout allocation is traceable to a ChefOrderGroup.
+- Every food-order financial source that requires performer traceability retains the applicable ChefOrderGroup reference without assuming one ChefOrderGroup, performer, or PaymentAllocation equals one commercial provider, beneficiary, Payout, or PayoutLine.
 - Every Chef can retrieve complete order history through ChefOrderGroup.
 - Tax behavior is validated for launch jurisdictions.
 - Notifications work.

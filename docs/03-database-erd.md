@@ -63,7 +63,6 @@ erDiagram
     CARTS ||--o| ORDERS : converts_to
     KITCHENS ||--o{ ORDERS : fulfills
     ORDERS ||--o{ CHEF_ORDER_GROUPS : contains
-    CHEF_BUSINESSES ||--o{ CHEF_ORDER_GROUPS : fulfills
     CHEF_ORDER_GROUPS ||--o{ ORDER_ITEMS : contains
     ORDERS ||--o{ ORDER_ITEMS : contains
     FOOD_LISTINGS ||--o{ ORDER_ITEMS : purchased
@@ -86,12 +85,12 @@ erDiagram
 
     ORDERS ||--o{ PRICING_SNAPSHOTS : priced
     CHEF_ORDER_GROUPS ||--o{ PRICING_SNAPSHOTS : optionally_scopes
-    ORDERS ||--o| PAYMENTS : paid_by
+    ORDERS ||--o| PAYMENTS : food_order_payment
     PAYMENTS ||--o{ PAYMENT_ATTEMPTS : attempts
     PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
-    ORDERS ||--o{ PAYMENT_ALLOCATIONS : sources
+    ORDERS ||--o{ PAYMENT_ALLOCATIONS : food_source_reference
     CHEF_ORDER_GROUPS ||--o{ PAYMENT_ALLOCATIONS : referenced_by
-    ORDERS ||--o{ REFUNDS : refunded
+    ORDERS ||--o{ REFUNDS : food_refund_reference
     PAYMENTS ||--o{ REFUNDS : refunded_by
     REFUNDS ||--o{ REFUND_LINES : lines
     PAYMENT_ALLOCATIONS ||--o{ REFUND_LINES : optionally_traced_by
@@ -101,7 +100,7 @@ erDiagram
     ORDERS ||--o{ TAX_LINE_ITEMS : taxed
 
     PAYOUTS ||--o{ PAYOUT_LINES : contains
-    PAYMENT_ALLOCATIONS ||--o{ PAYOUT_LINES : settles
+    PAYMENT_ALLOCATIONS ||--o{ PAYOUT_LINES : optionally_referenced_by
     CHEF_ORDER_GROUPS ||--o{ PAYOUT_LINES : referenced_by
     LEDGER_TRANSACTIONS ||--|{ LEDGER_ENTRIES : contains
 
@@ -426,7 +425,7 @@ erDiagram
     CHEF_ORDER_GROUPS {
         uuid id PK
         uuid order_id FK
-        uuid chef_business_id FK
+        string conceptual_actual_chef_performer_ref "PLACEHOLDER; exact typed FK pending ADR-017"
         string status
         bigint subtotal_minor
         bigint discount_minor
@@ -456,8 +455,7 @@ erDiagram
 
     PROMOTIONS {
         uuid id PK
-        string owner_type "NOT NULL"
-        uuid owner_id "NOT NULL"
+        string conceptual_typed_owner_ref "PLACEHOLDER; not an arbitrary type plus UUID"
         string promotion_scope "NOT NULL"
         string promotion_type "NOT NULL"
         string name "NOT NULL"
@@ -487,8 +485,7 @@ erDiagram
     PROMOTION_TARGETS {
         uuid id PK
         uuid promotion_id FK "NOT NULL"
-        string target_type "NOT NULL"
-        uuid target_id NULL
+        string conceptual_typed_target_ref "PLACEHOLDER; exact typed relationship deferred"
         timestamptz created_at "NOT NULL"
     }
 
@@ -572,7 +569,7 @@ erDiagram
 
     PAYMENTS {
         uuid id PK
-        uuid order_id FK,UK
+        uuid order_id FK,UK NULL "FOOD specialization only; exact typed source pending ADR-020"
         string status
         bigint amount_minor
         string currency_code
@@ -597,9 +594,8 @@ erDiagram
     PAYMENT_ALLOCATIONS {
         uuid id PK
         uuid payment_id FK
-        uuid order_id FK
+        uuid order_id FK NULL "FOOD source trace only"
         uuid chef_order_group_id FK NULL
-        uuid chef_business_id FK NULL
         uuid delivery_id FK NULL
         uuid tax_line_item_id FK NULL
         string allocation_type
@@ -612,7 +608,7 @@ erDiagram
     REFUNDS {
         uuid id PK
         uuid payment_id FK
-        uuid order_id FK
+        uuid order_id FK NULL "FOOD context only; generalized typed source pending ADR-020"
         string reason
         string status
         bigint requested_amount_minor
@@ -659,8 +655,7 @@ erDiagram
 
     PAYOUTS {
         uuid id PK
-        string recipient_type
-        uuid recipient_id
+        string conceptual_settlement_beneficiary_ref "PLACEHOLDER; exact typed relationship pending ADR-020"
         string status
         bigint amount_minor
         string currency_code
@@ -674,7 +669,8 @@ erDiagram
     PAYOUT_LINES {
         uuid id PK
         uuid payout_id FK
-        uuid payment_allocation_id FK
+        uuid payment_allocation_id FK NULL
+        string conceptual_source_obligation_ref "PLACEHOLDER; exact typed relationship pending ADR-020"
         string settlement_context
         uuid order_id FK NULL
         uuid chef_order_group_id FK NULL
@@ -871,68 +867,61 @@ Fulfillment-state semantics are unambiguous:
 - `DRIVER_PICKED_UP` means the delivery driver has taken possession of the Order.
 - `PICKED_UP` must not be used to represent delivery-driver possession.
 
-## Promotion Model and Targeting
+## ChefOrderGroup Actual-Performer Identity
 
-The canonical promotion tables are `promotion.promotions` and `promotion.promotion_targets`. Core ownership, calculation scope, priority, compatibility, exclusivity, and targeting relationships remain relational. Flexible and extensible promotion conditions use `promotion.promotions.conditions JSONB`; target lists are not stored in JSONB.
+The canonical invariant is one `ChefOrderGroup` per one concrete food Order plus one durable actual-Chef performer/operational identity. The `conceptual_actual_chef_performer_ref` label in the Mermaid ERD is an explicit conceptual placeholder, not a selected physical column or string-valued relationship. Exact typed relational representation and the uniqueness key are deferred to ADR-017 and the later full ERD reconciliation. The selected design must provide database-enforceable referential integrity and durable historical performer explainability without deriving identity from current employment or Organization membership.
 
-Conceptually, the canonical promotion model is:
+A Chef-specific business or storefront identity may remain meaningful, but `chef_business_id`, `organization_id`, `commercial_provider_id`, `settlement_beneficiary_id`, or `connected_account_id` cannot by itself define ChefOrderGroup uniqueness when distinct actual Chefs may share that identity. Chef Business is not simultaneously the actual performer, employer Organization, commercial provider, and settlement beneficiary.
 
-```sql
-CREATE TABLE promotion.promotions (
-    id UUID PRIMARY KEY,
-    owner_type VARCHAR(20) NOT NULL,
-    owner_id UUID NOT NULL,
-    promotion_scope VARCHAR(30) NOT NULL,
-    promotion_type VARCHAR(30) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    valid_from TIMESTAMPTZ NOT NULL,
-    valid_to TIMESTAMPTZ NULL,
-    priority INT NOT NULL DEFAULT 0,
-    qualifying_basis VARCHAR(50) NULL,
-    compatibility_group VARCHAR(100) NULL,
-    exclusivity_group VARCHAR(100) NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
-    conditions JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (owner_type IN ('CHEF', 'PLATFORM', 'ENTREPRENEUR')),
-    CHECK (promotion_scope IN ('ITEM', 'CHEF_ORDER_GROUP', 'DELIVERY', 'ORDER')),
-    CHECK (qualifying_basis IS NULL OR qualifying_basis IN (
-        'ALL_ELIGIBLE_ITEMS',
-        'NON_DISCOUNTED_ELIGIBLE_ITEMS',
-        'SPECIFIC_TARGET_ITEMS',
-        'GROUP_SUBTOTAL',
-        'DELIVERY_FEE'
-    )),
-    CHECK (valid_to IS NULL OR valid_to > valid_from)
-);
+For example, ABC Food Group may employ or engage Ravi and Maria, commercially provide their food, and be the approved settlement beneficiary for the relevant marketplace obligations. Order O1 still has separate ChefOrderGroup Ravi and ChefOrderGroup Maria records. Their common Organization/provider/beneficiary identity does not merge the groups and does not require a separate external payout recipient for either performer.
 
-CREATE TABLE promotion.promotion_targets (
-    id UUID PRIMARY KEY,
-    promotion_id UUID NOT NULL REFERENCES promotion.promotions(id) ON DELETE CASCADE,
-    target_type VARCHAR(20) NOT NULL,
-    target_id UUID NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (promotion_id, target_type, target_id),
-    CHECK (target_type IN (
-        'FOOD_LISTING',
-        'MENU',
-        'CHEF_BUSINESS',
-        'CATEGORY',
-        'CATEGORY_ALL'
-    )),
-    CHECK (
-        (target_type = 'CATEGORY_ALL' AND target_id IS NULL)
-        OR (target_type <> 'CATEGORY_ALL' AND target_id IS NOT NULL)
-    )
-);
+Every `OrderItem` continues to belong to exactly one ChefOrderGroup. Every concrete food Order continues to reference exactly one physical Kitchen, and a ChefOrderGroup cannot establish a different Kitchen from its parent Order. The actual performer, commercial provider, and settlement beneficiary remain distinct where applicable:
 
-CREATE UNIQUE INDEX uq_promotion_targets_category_all
-    ON promotion.promotion_targets (promotion_id, target_type)
-    WHERE target_type = 'CATEGORY_ALL';
+```text
+SERVICE PERFORMER
+!= COMMERCIAL PROVIDER
+!= SETTLEMENT BENEFICIARY
+
+CHEFORDERGROUP
+!= PAYOUT RECIPIENT
+!= CONNECTED ACCOUNT
 ```
 
-`target_id` is nullable only because ADR-006 defines `CATEGORY_ALL` with no specific target ID. All other target types require a target ID. Ordinary targeting rows use `UNIQUE (promotion_id, target_type, target_id)`. Because PostgreSQL normally treats `NULL` values as distinct, the partial unique index on `(promotion_id, target_type) WHERE target_type = 'CATEGORY_ALL'` separately ensures that each promotion has at most one `CATEGORY_ALL` targeting row. No sentinel UUID or `NULLS NOT DISTINCT` dependency is used.
+Exact effective-dated Chef/Organization engagement and authorization persistence remains ADR-017 work. This narrow reconciliation does not create a final Employment, Worker, ProfessionalMembership, or ProfessionalOrganizationEngagement schema.
+
+## Promotion Model and Targeting
+
+The canonical promotion tables remain `promotion.promotions` and `promotion.promotion_targets`. Core ownership, calculation scope, priority, compatibility, exclusivity, and targeting relationships remain relational. Flexible and extensible promotion conditions use `promotion.promotions.conditions JSONB`; owner relationships and target lists are not stored in JSONB.
+
+Approved conceptual Promotion owner identities are `CHEF`, `PLATFORM`, `ENTREPRENEUR`, `DIETITIAN`, and `ORGANIZATION`, subject to domain policy and authorization. A Dietitian owner is valid only for approved professional-service Promotions such as consultation offerings; this does not create Dietitian food-sale, Meal Subscription, referral, recommendation, or Chef-purchase commission. An Organization owner identifies an authorized accountable Organization rather than a fake Chef, property owner by default, or authenticated User by implication.
+
+Canonical owner persistence must use typed owner relationships, domain-valid owner identities, database-enforceable referential integrity where practical, and durable historical owner explainability. An unconstrained universal `owner_type` plus arbitrary UUID `owner_id` is not sufficient canonical relational integrity. The `conceptual_typed_owner_ref` label in the Mermaid ERD is not a physical column. Exact owner tables, foreign keys, and enum/check representation are deferred to the later full ERD reconciliation after the relevant ADR set is stable.
+
+The accepted food target meanings remain:
+
+- `FOOD_LISTING` — one concrete food listing.
+- `MENU` — one concrete menu.
+- `CHEF_BUSINESS` — one concrete Chef-specific business/storefront; it is not redefined as any employer or commercial-provider Organization.
+- `CATEGORY` — one concrete food category.
+- `CATEGORY_ALL` — the accepted special all-category semantic with no concrete target identity.
+
+The typed, domain-aware conceptual target `COMMERCIAL_PROVIDER_ORGANIZATION` must also be representable where the Promotion domain permits it. It means qualifying commercial offerings supplied through an identified Organization. It requires a real Organization identity, is not equivalent to `CATEGORY_ALL`, is not a fake Chef, and does not silently broaden `CHEF_BUSINESS`.
+
+Canonical target persistence must provide a typed relationship to each concrete domain resource, database-enforceable referential integrity where practical, and domain-aware validation. An unconstrained universal `target_type` plus arbitrary UUID `target_id` is not sufficient. The `conceptual_typed_target_ref` label in the Mermaid ERD is not a physical column. Exact typed relational representation is deferred to the later full ERD reconciliation after ADR-017 through ADR-020 are stable. This deferral does not authorize a universal TargetRegistry, one giant nullable-FK table, or JSONB as the canonical target relationship.
+
+Existing duplicate-target semantics are preserved: a Promotion cannot contain duplicate references to the same concrete typed target. `CATEGORY_ALL` retains its special null-identity behavior and separate uniqueness protection so one Promotion cannot contain duplicate `CATEGORY_ALL` rows. Concrete targets, including `COMMERCIAL_PROVIDER_ORGANIZATION`, require real typed identity and do not use the `CATEGORY_ALL` null case. Exact replacement SQL will be finalized with the typed target layout; this task does not weaken the accepted uniqueness behavior.
+
+These dimensions remain separate and must not be forced equal by the eventual table layout:
+
+```text
+PROMOTION OWNER
+!= TARGET
+!= CALCULATION SCOPE
+!= SERVICE PERFORMER
+!= COMMERCIAL PROVIDER
+!= SETTLEMENT BENEFICIARY
+!= FUNDING SOURCE
+```
 
 ### Promo-Code Redemption
 
@@ -993,10 +982,11 @@ PromotionApplication and PromotionSnapshot records remain immutable calculation 
 
 Promotion ownership and food-order calculation scope are distinct:
 
-- Ownership domains are `CHEF`, `PLATFORM`, and `ENTREPRENEUR`.
+- Approved conceptual ownership domains are `CHEF`, `PLATFORM`, `ENTREPRENEUR`, `DIETITIAN`, and `ORGANIZATION`, subject to domain authorization.
 - Food-order calculation scopes are `ITEM`, `CHEF_ORDER_GROUP`, `DELIVERY`, and `ORDER`.
 - `PLATFORM` is an ownership domain, not a calculation scope.
-- Entrepreneur booking and equipment promotions remain in the booking/rental promotion domain unless a future cross-domain rule is explicitly approved; `ENTREPRENEUR` is not a food-order calculation scope.
+- Entrepreneur booking and equipment promotions remain in the booking/rental promotion domain; `ENTREPRENEUR` is not a food-order calculation scope.
+- Dietitian consultation ownership and Organization ownership do not make those owner identities food-order calculation scopes.
 
 Chef-owned promotions are evaluated within the relevant `ChefOrderGroup`. Chef A and Chef B are independent promotion domains within the same Order. Item-level and ChefOrderGroup-level promotions may coexist when their monetary scopes do not overlap and compatibility rules allow it.
 
@@ -1020,33 +1010,48 @@ financial.ledger_transactions
 financial.ledger_entries
 ```
 
-There is no competing `payment.*` schema and no required `financial.ledger_accounts` table. The uppercase ERD entity names above represent exactly these 11 `financial.*` tables. PricingSnapshots, PromotionSnapshots, FeeLineItems, TaxLineItems, and Delivery quoted-fee evidence remain with their owning domains.
+There is no competing `payment.*` schema and no required `financial.ledger_accounts` table. The uppercase ERD entity names above represent these 11 current foundational `financial.*` tables. They are not a declaration that this set is permanently sufficient; ADR-020 may require additional non-ledger Financial records. PricingSnapshots, PromotionSnapshots, FeeLineItems, TaxLineItems, and Delivery quoted-fee evidence remain with their owning domains.
 
 ### Payment and Allocation Model
 
-- One customer checkout creates at most one logical `financial.payments` record for its Order. `financial.payments.order_id` is protected by a relational uniqueness constraint equivalent to `UNIQUE (order_id)`; split tender and multiple independent Payments per Order are not modeled.
+- `financial.payments` remains the foundational logical collection aggregate for one approved billable commercial context. For the food specialization, one concrete food Order has at most one logical Payment; relational uniqueness equivalent to `UNIQUE (order_id)` applies to that specialization, and food split tender or multiple independent Payments per Order are not modeled.
+- Payment is not universally Order-owned. Approved non-Order contexts include KitchenBooking, separately billable EquipmentRental, Dietitian Appointment/consultation, Meal Subscription billing cycle, and Kitchen Subscription billing cycle. These remain their own domain aggregates and must not be converted into fake Orders. The exact Payment cardinality for each non-food context is not inferred from the food rule.
+- The `order_id` shown on `PAYMENTS` in the Mermaid ERD is the current food-specialization relationship, not a universal required source column. Exact typed Payment-to-context relationships, foreign keys, and replay-safe cardinalities are deferred to ADR-020 and later canonical ERD reconciliation. This deferral does not approve an unconstrained universal `source_type` plus arbitrary UUID, a universal BusinessSource aggregate, a giant nullable-FK table, or JSONB as canonical source identity.
 - Retryable provider interactions are separate `financial.payment_attempts` records, each belonging to exactly one Payment and carrying its own identity and a sequence unique within that Payment. `provider_name` is required when the attempt uses a provider. `provider_payment_reference` may be null before provider creation when the flow requires it; once non-null, a partial unique constraint on `(provider_name, provider_payment_reference)` prevents one provider interaction from mapping ambiguously to multiple attempts.
 - The provider-neutral PaymentGateway initiation result is `PaymentInitiationResult`, not a provider SDK PaymentIntent object. Provider names, generic payment references, statuses, and metadata are integration evidence. Stripe Connect may be an adapter, but Stripe is not the financial domain model.
 - Merchant-of-Record, tax-remittance, legal, chargeback, and refund-liability responsibilities remain unresolved and are not asserted by this ERD.
-- A successful payment can have multiple internal `financial.payment_allocations`. Controlled allocation categories are `CHEF_PROCEEDS`, `PLATFORM_FEE`, `DELIVERY`, and `TAX`. Internal allocation is authoritative Cheffy distribution, not evidence that an external provider transfer completed.
-- Every allocation references Payment and Order and stores allocation type, positive integer minor-unit amount, and currency. `CHEF_PROCEEDS` requires `chef_order_group_id` and the appropriate Chef Business recipient. `PLATFORM_FEE` requires neither ChefOrderGroup nor an external recipient. `DELIVERY` requires the applicable Delivery/Order obligation and no ChefOrderGroup. `TAX` requires the applicable TaxLineItem/Order obligation and no ChefOrderGroup. Type-specific CHECK/trigger-equivalent constraints enforce conditional nullability; canonical polymorphic JSONB relationships are prohibited.
-- `ChefOrderGroup` is an allocation and traceability reference. The financial domain owns payment and allocation aggregates.
+- A successful Payment can have multiple internal `financial.payment_allocations`. PaymentAllocation is the payment-side logical distribution/reference for approved shares and may preserve typed source/economic traceability across approved billable contexts. It is not universally a Food Order plus Chef Business recipient relationship. Exact allocation categories and typed generalized source/provider relationships remain ADR-020 work rather than being finalized here.
+- Every allocation references its Payment and stores its approved allocation type, positive integer minor-unit amount, and currency. Food allocations may reference Order, ChefOrderGroup, Delivery, TaxLineItem, and other typed evidence where applicable. Non-food contexts use their applicable future typed relationships rather than a fake Order or ChefOrderGroup. Type-specific database constraints must enforce required references after the final relational design is approved; canonical polymorphic JSONB relationships remain prohibited.
+- `ChefOrderGroup` is an actual-performer source and traceability reference where applicable. It does not by itself identify the commercial provider, settlement beneficiary, connected-account holder, or external payout recipient. Multiple ChefOrderGroups may contribute source/economic evidence to one Organization commercial obligation, and one PaymentAllocation recipient per performer is not required.
+- PaymentAllocation is not earning recognition, payout eligibility, Payout, PayoutLine, provider transfer/external settlement, or LedgerEntry. The Financial domain owns Payment and PaymentAllocation aggregates.
 - Currency must match across the Payment and each PaymentAllocation; cross-table enforcement is required in the transaction or by an explicitly designed database mechanism.
 
 ### Refund Model
 
 - `financial.refunds` and `financial.refund_lines` create new append-only financial facts; original payments and allocations are not rewritten.
-- Refund requires Payment and Order. `requested_amount_minor` is known at request time; `approved_amount_minor` remains nullable until provider approval/confirmation determines it. `provider_refund_reference` is generic and nullable until the provider creates one.
+- Refund requires its Payment and applicable typed billable-context evidence; it is not universally Order-owned. `requested_amount_minor` is known at request time; `approved_amount_minor` remains nullable until provider approval/confirmation determines it. `provider_refund_reference` is generic and nullable until the provider creates one.
+- A food Refund may reference Order, ChefOrderGroup, OrderItem, PaymentAllocation, and immutable Pricing/Promotion evidence as applicable. Kitchen Booking, Dietitian Appointment, Meal Subscription billing, and Kitchen Subscription billing may produce Refund facts without fake Orders. Exact typed generalized Refund source foreign keys and cardinalities are deferred to ADR-020 and later canonical ERD reconciliation.
 - Refund lines may reference the original PaymentAllocation, OrderItem, and `chef_order_group_id` where applicable, enabling allocation-, item-, group-, and order-level partial refunds. Their currency must match the parent Refund and original financial flow.
 - Original Payment, PaymentAllocation, PricingSnapshot, PromotionSnapshot, and posted ledger history remain immutable evidence. Provider refund retries/interactions remain generic provider workflow evidence rather than a provider-specific aggregate. Refund processing may create new compensating ledger postings.
 
 ### Payout Model
 
 - The supported payout lifecycle is `PENDING → ELIGIBLE → PROCESSING → SUCCESS`, with `FAILED` and `ON_HOLD` where applicable.
-- `financial.payout_lines` require a relational source payable obligation. In the current food-payment model, `payment_allocation_id` identifies the internal obligation establishing the amount; Chef proceeds also reference `chef_order_group_id`, while other approved sources may use the relevant Order or Kitchen Booking reference.
-- A uniqueness rule equivalent to `(payment_allocation_id, settlement_context)` prevents the same payable obligation from being settled twice in the same applicable context. Payout and PayoutLine currencies must be consistent with their source obligation.
-- The financial domain owns Payout aggregates. `ChefOrderGroup` is a traceability reference and does not own a Payout.
-- Payout creation records an obligation/lifecycle fact, not proof that provider transfer completed. Execution is provider-neutral and supports provider-assisted or automated execution through an adapter; no manual-only Chef payout workflow is assumed.
+- `financial.payouts` and `financial.payout_lines` remain Financial-owned. PayoutLine must ultimately reference an approved relational source commercial obligation and prevent duplicate settlement in the applicable context, but PaymentAllocation does not itself establish earning recognition or payout eligibility. The `conceptual_source_obligation_ref` and `conceptual_settlement_beneficiary_ref` labels in the Mermaid ERD are placeholders, not physical string columns.
+- Exact commercial-obligation, earning-recognition, generalized financial-source, settlement-beneficiary, payout-eligibility, grouping, and duplicate-settlement relationships are deferred to ADR-020 and later canonical ERD reconciliation. A Payout is not required per Chef, ChefOrderGroup, Order, Appointment, Booking, subscription billing cycle, or fulfillment occurrence; one Payout may aggregate multiple eligible obligations when the future approved model permits it.
+- `ChefOrderGroup` may be a food source/traceability reference on applicable financial evidence but does not own a Payout and is not the Payout recipient. An actual Chef performer is not required to hold a connected account or receive a direct external marketplace Payout. Multiple ChefOrderGroups may contribute to one approved Organization commercial-provider/settlement-beneficiary obligation.
+- Payout creation records an approved payout-execution/lifecycle fact, not the source commercial obligation, earning-recognition decision, payout-eligibility calculation, or proof that provider transfer completed. Execution is provider-neutral and supports provider-assisted or automated execution through an adapter; no manual-only Chef payout workflow is assumed.
+
+```text
+MARKETPLACE SETTLEMENT
+!= EMPLOYEE / CONTRACTOR PAYROLL
+```
+
+Marketplace Payout persistence does not model wages, salary, worker bonuses, payroll deductions, withholding, payroll tax, or other employee/contractor compensation. If ABC Food Group employs Ravi, Ravi's wages are not represented as a Chef marketplace Payout redirected to ABC.
+
+For Kitchen commerce, the approved commercial operator/settlement beneficiary need not be the Kitchen property owner. Exact operating-right persistence remains future architecture/ERD work; this ERD introduces no lease accounting, landlord billing, or property-management schema.
+
+This narrow reconciliation does not add the future professional, Appointment, subscription, occurrence, entitlement, commercial-obligation, earning-recognition, or payable-source tables. Exact professional identity and effective-dated Organization authorization remain ADR-017 work; Dietitian Appointment/consultation persistence remains ADR-018 work; and subscription persistence remains ADR-019 work. The later subscription model must preserve `ChefMealPlan`, `MealSubscriptionOffer`, `MealSubscription`, and `MealFulfillmentOccurrence` separately from `KitchenSubscriptionOffer`, `ChefKitchenSubscription`, `KitchenEntitlementCycle`, and `KitchenBooking`; no universal Subscription table is introduced here. Exact generalized Financial relationships remain ADR-020 work.
 
 ### Idempotency and Provider Events
 
@@ -1071,6 +1076,8 @@ ALTER TABLE financial.provider_events
 `financial.ledger_transactions` is the canonical posting/finalization header and aggregate root for `financial.ledger_entries`. The required `ledger_transaction_id` FK replaces an unparented transaction UUID grouping. One header owns exactly one `currency_code`; entries cannot select or mix currencies independently.
 
 A LedgerTransaction includes source type/identity, optional `compensates_ledger_transaction_id`, status, timestamps, and database-validated `entry_count`, `total_debit_minor`, and `total_credit_minor`. The only normal transition is `DRAFT → POSTED`; POSTED is terminal.
+
+Ledger `source_type`/`source_id` values are controlled posting and correlation metadata under ADR-015; they do not establish an unconstrained universal business-source relationship or replace the typed commercial-obligation/source relationships deferred to ADR-020. No universal BusinessSource aggregate is introduced.
 
 Each LedgerEntry includes required controlled `account_code`, `entry_type`, positive `amount_minor`, `direction`, relational source references, immutable `entry_snapshot`, and `created_at`.
 
@@ -1097,10 +1104,10 @@ One local PostgreSQL transaction atomically contains the authoritative financial
 
 ### Pricing, Fee, Tax, and Delivery Evidence
 
-- `pricing.pricing_snapshots` is the one canonical immutable commercial calculation snapshot for an Order and optional ChefOrderGroup scope. `latest_pricing_snapshot_id` is only a convenience pointer. There is no separate FinancialSnapshot persistence concept.
+- `pricing.pricing_snapshots` is the sole canonical immutable commercial pricing/calculation snapshot authority; the currently depicted relationship is the food Order and optional ChefOrderGroup slice. `latest_pricing_snapshot_id` is only a convenience pointer. There is no separate FinancialSnapshot persistence concept. Later typed persistence for approved non-Order commercial contexts must extend Pricing-owned evidence rather than duplicate it in Financial.
 - FeeLineItems are Pricing-owned calculation evidence. TaxLineItems are provider-neutral Tax/Pricing calculation evidence. Neither is a `financial.*` settlement table, and historical values are not reconstructed from current configuration.
-- Financial platform/Chef/delivery/tax obligations are represented by PaymentAllocations and ledger postings, with PayoutLines where applicable.
-- `delivery.deliveries.quoted_fee_minor` is quoted/captured commercial delivery-pricing evidence, not settlement truth. The settlement obligation uses PaymentAllocation and ledger posting.
+- Financial payment-side shares may be represented by PaymentAllocations, finalized accounting facts by ledger postings, and approved payout execution by PayoutLines where applicable. PaymentAllocation does not itself establish the future commercial-obligation, earning-recognition, or payout-eligibility facts deferred to ADR-020.
+- `delivery.deliveries.quoted_fee_minor` is quoted/captured commercial delivery-pricing evidence, not settlement truth. Applicable payment-side allocation, commercial-obligation, ledger, and settlement facts remain distinct.
 - Tax provider records are adapter evidence, not the Tax domain model or Cheffy financial system of record.
 
 ### Money, Evidence, UUID, and Time Rules
