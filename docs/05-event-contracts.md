@@ -41,7 +41,10 @@ Core events:
 
 ```text
 KitchenPublished.v1
+KitchenBookingRequested.v1
 KitchenBookingConfirmed.v1
+KitchenBookingDeclined.v1
+KitchenBookingWithdrawn.v1
 KitchenBookingCancelled.v1
 KitchenBookingHeld.v1
 KitchenBookingHoldExpired.v1
@@ -86,6 +89,170 @@ LedgerTransactionPosted.v1
 PromotionApplied.v1
 PromotionInvalidated.v1
 ```
+
+## Phase-1 Kitchen Marketplace Events
+
+The Phase-1 Kitchen marketplace emits exactly the publication and booking
+transition events below. Availability/RentalOffer CRUD and pilot feedback do
+not emit public integration events in Phase 1. Every event is inserted in the
+same local transaction as the aggregate/history transition. Consumers are
+idempotent by `eventId` and enforce `dataScopeId`; a DEMO event must never
+create a REAL notification or analytics record.
+
+`KitchenPublished.v1` means an authorized operator transitioned the Kitchen
+to `PUBLISHED`. It does not assert that platform pilot authorization exists or
+that the Kitchen is currently requestable.
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "KitchenPublished.v1",
+  "eventVersion": 1,
+  "occurredAt": "2026-09-01T12:00:00Z",
+  "aggregateType": "KITCHEN",
+  "aggregateId": "uuid",
+  "correlationId": "uuid",
+  "causationId": "uuid",
+  "payload": {
+    "kitchenId": "uuid",
+    "operatorOrganizationId": "uuid",
+    "dataScopeId": "uuid",
+    "status": "PUBLISHED",
+    "publishedAt": "2026-09-01T12:00:00Z"
+  }
+}
+```
+
+`KitchenBookingRequested.v1` means a non-reserving KitchenBooking was created
+in `REQUESTED`. It does not assert current capacity, operator acceptance, or a
+financial obligation.
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "KitchenBookingRequested.v1",
+  "eventVersion": 1,
+  "occurredAt": "2026-09-01T12:00:00Z",
+  "aggregateType": "KITCHEN_BOOKING",
+  "aggregateId": "uuid",
+  "correlationId": "uuid",
+  "causationId": "uuid",
+  "payload": {
+    "bookingId": "uuid",
+    "kitchenId": "uuid",
+    "kitchenSpaceId": "uuid",
+    "rentalOfferId": "uuid",
+    "chefProfileId": "uuid",
+    "operatorOrganizationId": "uuid",
+    "dataScopeId": "uuid",
+    "status": "REQUESTED",
+    "startAt": "2026-09-03T13:00:00Z",
+    "endAt": "2026-09-03T17:00:00Z",
+    "occupancyEndAt": "2026-09-03T18:00:00Z",
+    "kitchenTimezoneId": "America/Toronto",
+    "requestedAt": "2026-09-01T12:00:00Z"
+  }
+}
+```
+
+`KitchenBookingConfirmed.v1` is emitted only after the ADR-007 protected
+transition commits. It represents reserved Space occupancy, not payment.
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "KitchenBookingConfirmed.v1",
+  "eventVersion": 1,
+  "occurredAt": "2026-09-01T13:00:00Z",
+  "aggregateType": "KITCHEN_BOOKING",
+  "aggregateId": "uuid",
+  "correlationId": "uuid",
+  "causationId": "uuid",
+  "payload": {
+    "bookingId": "uuid",
+    "kitchenId": "uuid",
+    "kitchenSpaceId": "uuid",
+    "chefProfileId": "uuid",
+    "operatorOrganizationId": "uuid",
+    "dataScopeId": "uuid",
+    "status": "CONFIRMED",
+    "startAt": "2026-09-03T13:00:00Z",
+    "endAt": "2026-09-03T17:00:00Z",
+    "occupancyEndAt": "2026-09-03T18:00:00Z",
+    "kitchenTimezoneId": "America/Toronto",
+    "confirmedAt": "2026-09-01T13:00:00Z"
+  }
+}
+```
+
+The decline, withdrawal, and cancellation events share the same safe identity
+boundary. They do not embed request messages, requirement details, profile
+contact data, exact address/coordinates, access instructions, feedback text,
+or arbitrary reason text.
+
+For decline and withdrawal, `reasonCode` is omitted when the command supplied
+no optional controlled reason; when present it uses the corresponding
+canonical API enum. Cancellation always carries its required controlled
+`reasonCode`, and `actorRole` is `CHEF` or `OPERATOR`. Free-text reason notes
+are never copied into these events.
+
+Canonical `KitchenBookingDeclined.v1` payload:
+
+```json
+{
+  "bookingId": "uuid",
+  "kitchenId": "uuid",
+  "kitchenSpaceId": "uuid",
+  "chefProfileId": "uuid",
+  "operatorOrganizationId": "uuid",
+  "dataScopeId": "uuid",
+  "status": "DECLINED",
+  "reasonCode": "REQUIREMENT_MISMATCH",
+  "declinedAt": "2026-09-01T13:00:00Z"
+}
+```
+
+Canonical `KitchenBookingWithdrawn.v1` payload:
+
+```json
+{
+  "bookingId": "uuid",
+  "kitchenId": "uuid",
+  "kitchenSpaceId": "uuid",
+  "chefProfileId": "uuid",
+  "operatorOrganizationId": "uuid",
+  "dataScopeId": "uuid",
+  "status": "WITHDRAWN",
+  "withdrawnAt": "2026-09-01T13:00:00Z"
+}
+```
+
+Canonical `KitchenBookingCancelled.v1` payload:
+
+```json
+{
+  "bookingId": "uuid",
+  "kitchenId": "uuid",
+  "kitchenSpaceId": "uuid",
+  "chefProfileId": "uuid",
+  "operatorOrganizationId": "uuid",
+  "dataScopeId": "uuid",
+  "status": "CANCELLED",
+  "actorRole": "OPERATOR",
+  "reasonCode": "OPERATOR_UNAVAILABLE",
+  "cancelledAt": "2026-09-01T13:00:00Z"
+}
+```
+
+For the three compact payloads above, the event envelope is the canonical
+ADR-016 envelope with `aggregateType: KITCHEN_BOOKING`, `aggregateId` equal to
+`bookingId`, and a matching `.v1`/`eventVersion: 1` pair.
+
+The notification consumer uses these events to create durable in-app records
+and retryable email deliveries. Notification failure never reverts publication
+or booking state. Approved product analytics may count controlled transition,
+stage, scope, and timing fields; it must not enrich events with private text or
+address/contact data.
 
 Fulfillment event semantics:
 

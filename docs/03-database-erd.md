@@ -12,23 +12,63 @@
 
 ```mermaid
 erDiagram
+    DATA_SCOPES ||--o{ USERS : scopes
+    DATA_SCOPES ||--o{ ORGANIZATIONS : scopes
+    DATA_SCOPES ||--o{ KITCHENS : scopes
+    DATA_SCOPES ||--o{ KITCHEN_BOOKINGS : scopes
+    DATA_SCOPES ||--o{ FEEDBACK_SUBMISSIONS : scopes
+    DATA_SCOPES ||--o{ NOTIFICATIONS : scopes
+    DATA_SCOPES ||--o{ MEDIA_ASSETS : scopes
+    DATA_SCOPES ||--o{ DEMO_RESET_RUNS : resets
+    DATA_SCOPES ||--o{ BOOKING_COMMAND_RECEIPTS : scopes
     USERS ||--o{ ORGANIZATION_MEMBERS : belongs_to
+    USERS ||--o{ USER_PLATFORM_ROLES : granted
+    USERS ||--o| PARTICIPANT_PROFILES : has
+    USERS ||--o{ USER_STATUS_HISTORY : changes
+    USERS ||--o{ MEDIA_ASSETS : owns
     ORGANIZATIONS ||--o{ ORGANIZATION_MEMBERS : has
+    ORGANIZATIONS ||--o| ORGANIZATION_PROFILES : describes
     ROLES ||--o{ ORGANIZATION_MEMBERS : assigns
+    ROLES ||--o{ USER_PLATFORM_ROLES : grants
+    ROLES ||--o{ ROLE_PERMISSIONS : contains
+    PERMISSIONS ||--o{ ROLE_PERMISSIONS : included_as
+    ORGANIZATION_MEMBERS ||--o{ ORGANIZATION_MEMBER_KITCHEN_ASSIGNMENTS : assigned
+    KITCHENS ||--o{ ORGANIZATION_MEMBER_KITCHEN_ASSIGNMENTS : managed_by
 
     ORGANIZATIONS ||--o{ LOCATIONS : owns
     LOCATIONS ||--o{ KITCHENS : contains
     KITCHENS ||--o{ KITCHEN_SPACES : contains
+    KITCHENS ||--o{ KITCHEN_OPERATING_HOUR_RULES : constrains
+    KITCHENS ||--o{ KITCHEN_OPERATOR_REQUIREMENTS : requests
+    KITCHENS ||--o{ KITCHEN_PUBLICATION_HISTORY : audits
+    KITCHENS ||--o{ KITCHEN_PILOT_AUTHORIZATIONS : authorizes
+    KITCHENS ||--o{ KITCHEN_MEDIA : displays
+    MEDIA_ASSETS ||--o{ KITCHEN_MEDIA : attached_as
+    KITCHEN_SPACES ||--o{ SPACE_MEDIA : displays
+    MEDIA_ASSETS ||--o{ SPACE_MEDIA : attached_as
 
-    KITCHEN_SPACES ||--o{ SPACE_EQUIPMENT : includes
+    KITCHEN_SPACES ||--o{ RENTAL_OFFERS : offers
+    RENTAL_OFFERS o|--o{ KITCHEN_BOOKINGS : selected_by
+    KITCHEN_SPACES ||--o{ SPACE_AVAILABILITY_RULES : schedules
+    SPACE_AVAILABILITY_RULES ||--o{ SPACE_AVAILABILITY_RULE_WEEKDAYS : repeats_on
+    KITCHEN_SPACES ||--o{ SPACE_EQUIPMENT : describes
     EQUIPMENT_CATALOG_ITEMS ||--o{ SPACE_EQUIPMENT : referenced_by
     KITCHEN_SPACES ||--o{ EQUIPMENT_RENTALS : offers
     EQUIPMENT_CATALOG_ITEMS ||--o{ EQUIPMENT_RENTALS : rented_as
 
-    KITCHENS ||--o{ KITCHEN_AVAILABILITIES : defines
-    KITCHEN_SPACES ||--o{ KITCHEN_SPACE_AVAILABILITIES : defines
     KITCHEN_SPACES ||--o{ KITCHEN_BOOKINGS : reserved
     CHEF_PROFILES ||--o{ KITCHEN_BOOKINGS : creates
+    KITCHEN_BOOKINGS ||--o| BOOKING_REQUEST_SNAPSHOTS : snapshots
+    KITCHEN_BOOKINGS ||--o| BOOKING_RENTAL_OFFER_SNAPSHOTS : freezes
+    KITCHEN_BOOKINGS ||--o{ BOOKING_REQUIREMENT_DECLARATIONS : declares
+    KITCHEN_OPERATOR_REQUIREMENTS ||--o{ BOOKING_REQUIREMENT_DECLARATIONS : answers
+    BOOKING_REQUIREMENT_DECLARATIONS ||--o{ BOOKING_REQUIREMENT_REVIEWS : reviewed
+    KITCHEN_BOOKINGS ||--o{ BOOKING_EQUIPMENT_NEEDS : needs
+    EQUIPMENT_CATALOG_ITEMS ||--o{ BOOKING_EQUIPMENT_NEEDS : requested
+    USERS ||--o{ BOOKING_COMMAND_RECEIPTS : invokes
+    KITCHEN_BOOKINGS ||--o{ BOOKING_COMMAND_RECEIPTS : resolves_to
+    BOOKING_COMMAND_RECEIPTS ||--o| BOOKING_STATUS_HISTORY : causes
+    KITCHEN_BOOKINGS ||--o{ BOOKING_STATUS_HISTORY : changes
     KITCHEN_BOOKINGS ||--o{ EQUIPMENT_BOOKINGS : requests
     EQUIPMENT_RENTALS ||--o{ EQUIPMENT_BOOKINGS : requested_as
     KITCHEN_BOOKINGS ||--o{ EQUIPMENT_ALLOCATIONS : reserves
@@ -36,6 +76,9 @@ erDiagram
 
     CHEF_BUSINESSES ||--o{ CHEF_MEMBERS : has
     USERS ||--o{ CHEF_MEMBERS : participates
+    USERS ||--o| CHEF_PROFILES : has
+    CHEF_PROFILES ||--o{ CHEF_PROFILE_BUSINESS_CATEGORIES : classifies
+    CHEF_BUSINESS_CATEGORIES ||--o{ CHEF_PROFILE_BUSINESS_CATEGORIES : selected
     CHEF_BUSINESSES ||--o{ MENUS : owns
     MENUS ||--o{ MENU_ITEMS : contains
     FOOD_LISTINGS ||--o{ MENU_ITEMS : referenced
@@ -125,6 +168,10 @@ erDiagram
     FOOD_REQUESTS ||--o{ FOOD_REQUEST_RESPONSES : answered
     CHEF_BUSINESSES ||--o{ FOOD_REQUEST_RESPONSES : responds
 
+    USERS ||--o{ FEEDBACK_SUBMISSIONS : submits
+    USERS ||--o{ NOTIFICATIONS : receives
+    NOTIFICATIONS ||--o{ NOTIFICATION_DELIVERIES : delivers
+
     OUTBOX_EVENTS {
         uuid id PK
         string aggregate_type
@@ -142,19 +189,96 @@ erDiagram
         timestamptz created_at
     }
 
+    DATA_SCOPES {
+        uuid id PK
+        string environment_key
+        string record_mode "DEMO or REAL, immutable"
+        bool resettable
+        string status
+        timestamptz created_at
+    }
+
+    PILOT_STAGE_STATE {
+        smallint singleton_id PK
+        string stage "PRE_PILOT or CONTROLLED_PILOT"
+        int version
+        uuid changed_by_user_id FK
+        text change_reason
+        timestamptz changed_at
+    }
+
+    PILOT_STAGE_HISTORY {
+        uuid id PK
+        string from_stage NULL
+        string to_stage
+        uuid changed_by_user_id FK
+        text change_reason
+        timestamptz changed_at
+    }
+
+    DEMO_RESET_RUNS {
+        uuid id PK
+        uuid data_scope_id FK
+        uuid requested_by_user_id FK
+        string status
+        string reset_fixture_version
+        text reason
+        int deleted_record_count
+        int created_record_count
+        timestamptz started_at
+        timestamptz completed_at NULL
+    }
+
     USERS {
         uuid id PK
+        uuid data_scope_id FK
         string auth_subject UK
         string status
         timestamptz created_at
         timestamptz updated_at
     }
 
+    PARTICIPANT_PROFILES {
+        uuid id PK
+        uuid user_id FK, UK
+        string display_name
+        string contact_name
+        string contact_email
+        bool contact_email_verified
+        string preferred_locale "en-CA or fr-CA"
+        string phone_e164 NULL
+        string role_title NULL
+        text general_business_info NULL
+        int version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    USER_STATUS_HISTORY {
+        uuid id PK
+        uuid user_id FK
+        string from_status
+        string to_status
+        uuid changed_by_user_id FK
+        string reason_code
+        text reason_note NULL
+        timestamptz occurred_at
+    }
+
     ORGANIZATIONS {
         uuid id PK
+        uuid data_scope_id FK
         string type
         string name
         string status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    ORGANIZATION_PROFILES {
+        uuid organization_id PK, FK
+        text general_business_information NULL
+        int version
         timestamptz created_at
         timestamptz updated_at
     }
@@ -168,10 +292,37 @@ erDiagram
         timestamptz created_at
     }
 
+    USER_PLATFORM_ROLES {
+        uuid user_id PK, FK
+        uuid role_id PK, FK
+        bool active
+        timestamptz granted_at
+    }
+
     ROLES {
         uuid id PK
         string code UK
         string name
+        string scope_kind "PLATFORM or ORGANIZATION"
+    }
+
+    PERMISSIONS {
+        uuid id PK
+        string code UK
+        string name
+    }
+
+    ROLE_PERMISSIONS {
+        uuid role_id PK, FK
+        uuid permission_id PK, FK
+    }
+
+    ORGANIZATION_MEMBER_KITCHEN_ASSIGNMENTS {
+        uuid organization_member_id PK, FK
+        uuid kitchen_id PK, FK
+        uuid assigned_by_user_id FK
+        bool active
+        timestamptz assigned_at
     }
 
     LOCATIONS {
@@ -183,17 +334,78 @@ erDiagram
         string province
         string postal_code
         string country_code
-        geography point
+        geography private_point
+        string public_area_name
+        geography public_area_point NULL
+        string address_disclosure_policy
+        text access_instructions NULL
     }
 
     KITCHENS {
         uuid id PK
         uuid location_id FK
+        uuid data_scope_id FK
         string name
         text description
-        string status
+        string facility_type
+        text intended_use_statement
+        text public_accessibility_summary
+        text loading_parking_summary
+        text storage_summary
+        text facility_constraints
+        string visibility_level "PILOT_AUTHENTICATED"
+        string status "DRAFT, PUBLISHED, or UNPUBLISHED"
         string iana_timezone_id "authoritative Kitchen business timezone"
-        timestamptz published_at
+        timestamptz published_at NULL
+        int version
+    }
+
+    KITCHEN_OPERATING_HOUR_RULES {
+        uuid id PK
+        uuid kitchen_id FK
+        smallint iso_day_of_week
+        time local_start_time
+        time local_end_time
+        date effective_start_date
+        date effective_end_date NULL
+        bool active
+        int version
+    }
+
+    KITCHEN_OPERATOR_REQUIREMENTS {
+        uuid id PK
+        uuid kitchen_id FK
+        string requirement_code
+        string title
+        text prompt
+        bool active
+        int version
+    }
+
+    KITCHEN_PUBLICATION_HISTORY {
+        uuid id PK
+        uuid kitchen_id FK
+        string from_status
+        string to_status
+        string actor_role
+        uuid actor_user_id FK
+        bool authority_affirmed
+        string affirmation_version NULL
+        string reason_code NULL
+        text reason_note NULL
+        timestamptz occurred_at
+    }
+
+    KITCHEN_PILOT_AUTHORIZATIONS {
+        uuid id PK
+        uuid kitchen_id FK
+        string status "ACTIVE or REVOKED"
+        uuid authorized_by_user_id FK
+        text reason
+        timestamptz effective_at
+        timestamptz revoked_at NULL
+        uuid revoked_by_user_id FK "nullable"
+        text revocation_reason NULL
     }
 
     KITCHEN_SPACES {
@@ -201,36 +413,105 @@ erDiagram
         uuid kitchen_id FK
         string name
         text description
-        numeric size_value
-        string size_unit
+        numeric size_value NULL
+        string size_unit NULL
         int capacity
-        bigint hourly_rate_minor
-        string currency_code
-        int minimum_booking_minutes
-        int maximum_booking_minutes
+        text public_access_summary
+        string storage_mode
+        text storage_note NULL
+        text operating_constraints
+        string exclusivity_mode "EXCLUSIVE_SPACE"
+        int maximum_booking_minutes NULL
         int cleaning_minutes
         string status
         int version
     }
 
-    KITCHEN_AVAILABILITIES {
+    MEDIA_ASSETS {
         uuid id PK
-        uuid kitchen_id FK
-        string day_of_week
-        time local_start_time
-        time local_end_time
-        string recurrence_rule NULL
-        bool active
+        uuid data_scope_id FK
+        uuid owner_user_id FK
+        string storage_key UK
+        string media_type "IMAGE"
+        string mime_type
+        bigint byte_size
+        string checksum
+        string status
+        timestamptz created_at
+        timestamptz updated_at
     }
 
-    KITCHEN_SPACE_AVAILABILITIES {
+    KITCHEN_MEDIA {
+        uuid kitchen_id PK, FK
+        uuid media_asset_id PK, FK
+        int sort_order
+        string visibility
+        string alt_text_en_ca NULL
+        string alt_text_fr_ca NULL
+        string caption_en_ca NULL
+        string caption_fr_ca NULL
+    }
+
+    SPACE_MEDIA {
+        uuid kitchen_space_id PK, FK
+        uuid media_asset_id PK, FK
+        int sort_order
+        string visibility
+        string alt_text_en_ca NULL
+        string alt_text_fr_ca NULL
+        string caption_en_ca NULL
+        string caption_fr_ca NULL
+    }
+
+    RENTAL_OFFERS {
         uuid id PK
         uuid kitchen_space_id FK
-        string day_of_week
+        string rate_basis
+        string title
+        text description NULL
+        bigint amount_minor NULL
+        string currency_code NULL
+        int block_minutes NULL
+        string day_definition_code NULL
+        time daily_window_start_local_time NULL
+        time daily_window_end_local_time NULL
+        int included_quantity NULL
+        string included_unit NULL
+        int minimum_duration_minutes NULL
+        int minimum_commitment_count NULL
+        string minimum_commitment_unit NULL
+        bigint deposit_amount_minor NULL
+        string deposit_currency_code NULL
+        text deposit_note NULL
+        text additional_charges_note NULL
+        text terms_note NULL
+        bool active
+        int version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SPACE_AVAILABILITY_RULES {
+        uuid id PK
+        uuid kitchen_space_id FK
+        string availability_kind "AVAILABLE or BLOCKED"
+        string schedule_kind "ONE_TIME or WEEKLY"
+        date local_date NULL
         time local_start_time
         time local_end_time
-        string recurrence_rule NULL
+        int start_utc_offset_seconds NULL
+        int end_utc_offset_seconds NULL
+        date effective_start_date NULL
+        date effective_end_date NULL
         bool active
+        int version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SPACE_AVAILABILITY_RULE_WEEKDAYS {
+        uuid availability_rule_id FK
+        smallint iso_day_of_week
     }
 
     EQUIPMENT_CATALOG_ITEMS {
@@ -246,9 +527,11 @@ erDiagram
         uuid id PK
         uuid kitchen_space_id FK
         uuid equipment_catalog_item_id FK
-        int quantity
-        bool included
-        bool rental_available
+        int display_quantity NULL
+        string availability_mode
+        text condition_note NULL
+        text operator_note NULL
+        int version
     }
 
     EQUIPMENT_RENTALS {
@@ -265,16 +548,137 @@ erDiagram
 
     KITCHEN_BOOKINGS {
         uuid id PK
+        uuid data_scope_id FK
         uuid kitchen_space_id FK
         uuid chef_profile_id FK
+        uuid rental_offer_id FK "nullable outside Phase-1; required in pilot"
         timestamptz start_at
         timestamptz cooking_end_at
         timestamptz occupancy_end_at
         tstzrange occupancy_range "generated stored from start_at and occupancy_end_at"
-        timestamptz hold_expires_at
+        timestamptz hold_expires_at NULL
         string status
-        string cancellation_reason
+        string terminal_reason_code NULL
         int version
+        timestamptz requested_at
+        timestamptz decided_at NULL
+        timestamptz cancelled_at NULL
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    BOOKING_REQUEST_SNAPSHOTS {
+        uuid kitchen_booking_id PK, FK
+        uuid kitchen_id
+        string kitchen_name
+        uuid kitchen_space_id
+        string kitchen_space_name
+        string kitchen_timezone_id
+        string public_area_name
+        timestamptz requested_start_at
+        timestamptz requested_cooking_end_at
+        timestamptz requested_occupancy_end_at
+        int cleaning_minutes
+        uuid chef_profile_id
+        string chef_display_name
+        string chef_business_display_name NULL
+        string activity_category
+        text activity_description
+        text storage_needs NULL
+        text setup_needs NULL
+        text cleanup_needs NULL
+        text message_to_operator NULL
+        string acknowledged_disclaimer_version
+        timestamptz submitted_at
+    }
+
+    BOOKING_RENTAL_OFFER_SNAPSHOTS {
+        uuid kitchen_booking_id PK, FK
+        uuid rental_offer_id
+        int rental_offer_version
+        string rate_basis
+        bigint amount_minor NULL
+        string currency_code NULL
+        int block_minutes NULL
+        string day_definition_code NULL
+        time daily_window_start_local_time NULL
+        time daily_window_end_local_time NULL
+        int included_quantity NULL
+        string included_unit NULL
+        int minimum_duration_minutes NULL
+        int minimum_commitment_count NULL
+        string minimum_commitment_unit NULL
+        bigint deposit_amount_minor NULL
+        string deposit_currency_code NULL
+        text deposit_note NULL
+        text additional_charges_note NULL
+        text terms_note NULL
+        string estimate_status
+        bigint estimated_amount_minor NULL
+        string estimate_currency_code NULL
+        string estimate_formula_code NULL
+        string estimate_disclaimer_version
+    }
+
+    BOOKING_REQUIREMENT_DECLARATIONS {
+        uuid id PK
+        uuid kitchen_booking_id FK
+        uuid operator_requirement_id FK
+        int operator_requirement_version
+        string requirement_code_snapshot
+        string requirement_title_snapshot
+        text requirement_prompt_snapshot
+        string submitted_status
+        text reference_text NULL
+    }
+
+    BOOKING_REQUIREMENT_REVIEWS {
+        uuid id PK
+        uuid booking_requirement_declaration_id FK
+        string review_status "REVIEWED_OUTSIDE_PLATFORM"
+        uuid reviewed_by_user_id FK
+        text reference_text NULL
+        timestamptz reviewed_at
+    }
+
+    BOOKING_EQUIPMENT_NEEDS {
+        uuid id PK
+        uuid kitchen_booking_id FK
+        uuid equipment_catalog_item_id FK
+        string equipment_name_snapshot
+        string availability_mode_snapshot NULL
+        int requested_quantity NULL
+        text details NULL
+    }
+
+    BOOKING_COMMAND_RECEIPTS {
+        uuid id PK
+        uuid data_scope_id FK
+        uuid actor_user_id FK
+        string operation_type
+        string idempotency_key_hash
+        string request_hash
+        uuid kitchen_booking_id FK "nullable until creation resolves"
+        string status
+        int response_status NULL
+        int response_schema_version NULL
+        jsonb safe_response_snapshot NULL
+        timestamptz created_at
+        timestamptz completed_at NULL
+    }
+
+    BOOKING_STATUS_HISTORY {
+        uuid id PK
+        uuid kitchen_booking_id FK
+        uuid booking_command_receipt_id FK, UK "nullable outside command paths"
+        string from_status NULL
+        string to_status
+        string actor_role
+        uuid actor_user_id FK
+        string reason_code NULL
+        text reason_note NULL
+        uuid correlation_id
+        timestamptz occurred_at
     }
 
     EQUIPMENT_BOOKINGS {
@@ -300,11 +704,28 @@ erDiagram
     CHEF_PROFILES {
         uuid id PK
         uuid user_id FK
-        uuid chef_business_id FK
-        string display_name
-        text biography
-        geography service_location
+        uuid chef_business_id FK "nullable"
+        string business_display_name NULL
+        text description NULL
+        text intended_activity NULL
+        string general_operating_area NULL
+        text other_business_category NULL
         string status
+        int version
+    }
+
+    CHEF_BUSINESS_CATEGORIES {
+        uuid id PK
+        string code UK
+        string label_en_ca
+        string label_fr_ca
+        bool active
+        int sort_order
+    }
+
+    CHEF_PROFILE_BUSINESS_CATEGORIES {
+        uuid chef_profile_id FK
+        uuid business_category_id FK
     }
 
     CHEF_BUSINESSES {
@@ -750,6 +1171,54 @@ erDiagram
         timestamptz created_at
     }
 
+    FEEDBACK_SUBMISSIONS {
+        uuid id PK
+        uuid data_scope_id FK
+        uuid submitter_user_id FK
+        uuid organization_id FK "nullable"
+        string role_context
+        string category
+        text feedback_text
+        string locale
+        string route_context
+        string related_resource_kind NULL
+        uuid kitchen_id FK "nullable"
+        uuid kitchen_space_id FK "nullable"
+        uuid rental_offer_id FK "nullable"
+        uuid kitchen_booking_id FK "nullable"
+        string triage_status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    NOTIFICATIONS {
+        uuid id PK
+        uuid data_scope_id FK
+        uuid recipient_user_id FK
+        uuid source_event_id
+        string notification_type
+        uuid kitchen_booking_id FK "nullable"
+        string template_key
+        jsonb safe_template_args
+        string locale_snapshot
+        timestamptz created_at
+        timestamptz read_at NULL
+    }
+
+    NOTIFICATION_DELIVERIES {
+        uuid id PK
+        uuid notification_id FK
+        string channel "IN_APP or EMAIL"
+        string status
+        int attempt_count
+        timestamptz next_attempt_at NULL
+        string last_error_code NULL
+        string provider_reference NULL
+        timestamptz sent_at NULL
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
     IDEMPOTENCY_KEYS {
         uuid id PK
         string operation_type
@@ -777,13 +1246,323 @@ erDiagram
 
 ```
 
+## Phase-1 Pilot Persistence Rules
+
+### Data Scope and Pilot Gates
+
+`platform.data_scopes` owns the immutable `record_mode` classification. It has
+`CHECK (record_mode IN ('DEMO', 'REAL'))`, `CHECK (resettable = false OR
+record_mode = 'DEMO')`, and uniqueness on `(environment_key, id)`. Application
+roles cannot update `record_mode`. A DEMO-to-REAL change is forbidden; REAL
+onboarding creates new REAL records.
+
+`identity.users`, `organization.organizations`, `kitchen.kitchens`,
+`kitchen.kitchen_bookings`, `feedback.feedback_submissions`, and
+`notification.notifications` carry `data_scope_id`. Descendant rows derive the
+scope through their required parent. Composite foreign keys or equivalent
+database constraints must prevent a relationship across scopes; application
+checks alone are insufficient. Production reset authority may target only a
+specific `resettable = true`, `record_mode = 'DEMO'` scope and records an admin
+audit entry. It has no code path that accepts a REAL scope.
+
+`platform.pilot_stage_state` is a one-row optimistic-lock control with
+`CHECK (stage IN ('PRE_PILOT', 'CONTROLLED_PILOT'))`; every change appends
+`platform.pilot_stage_history`. Kitchen publication and platform authorization
+are deliberately separate:
+
+- `kitchen.kitchens.status` is `DRAFT`, `PUBLISHED`, or `UNPUBLISHED` and each
+  transition appends `kitchen.kitchen_publication_history`.
+- A currently requestable Kitchen has exactly one active
+  `kitchen.kitchen_pilot_authorizations` grant; a partial unique index on
+  `kitchen_id WHERE status = 'ACTIVE'` enforces that rule.
+- Emergency admin unpublish writes actor role `ADMIN` and a required
+  reason. It never fabricates an operator actor.
+
+`identity.users.status` is `ACTIVE` or `DEACTIVATED`. Admin changes require a
+reason and append `identity.user_status_history`; they do not erase booking or
+audit history. `platform.demo_reset_runs` is created before a reset and records
+the exact DEMO scope, fixture version, actor, counts, timing, and terminal
+status. A reset row cannot reference a REAL or non-resettable scope.
+The reset deletes/rebuilds only the fixture manifest's scoped business rows;
+it never deletes the DataScope, reset-run record, platform-admin identity, or
+audit history. `requested_by_user_id` is a control-plane audit actor reference,
+not authorization for REAL/DEMO business relationships to cross scopes.
+
+REAL controlled-pilot discovery requires all of: REAL scope,
+`CONTROLLED_PILOT`, `PUBLISHED`, active pilot authorization, active Space,
+active RentalOffer, and valid future availability. DEMO discovery requires an
+explicitly permitted DEMO scope and never joins to REAL data.
+
+### RentalOffer Constraints
+
+`kitchen.rental_offers` is the only current Space-pricing table. The removed
+KitchenSpace hourly price, currency, and minimum-duration columns are not a
+second source of truth. `rate_basis` is one of `HOURLY`, `FIXED_BLOCK`, `DAILY`,
+`RECURRING_HOURS`, `MONTHLY_HOURS`, or `PRIVATE_LONG_TERM_INQUIRY`.
+
+Database checks enforce:
+
+- `amount_minor >= 0`; amount and currency are both present or both absent.
+- Amount/currency may be absent only for `PRIVATE_LONG_TERM_INQUIRY`.
+- `FIXED_BLOCK` requires positive `block_minutes`.
+- `DAILY` requires `day_definition_code` equal to
+  `KITCHEN_LOCAL_CALENDAR_DAY` or `OFFER_DEFINED_LOCAL_WINDOW`; the latter
+  requires a non-overnight local start/end window.
+- `RECURRING_HOURS` requires a positive included quantity with
+  `included_unit = 'HOURS_PER_WEEK'`. `MONTHLY_HOURS` requires
+  `included_unit = 'HOURS_PER_MONTH'`. Their structured minimum commitment,
+  when required by the terms, uses `WEEKS` and `MONTHS` respectively.
+- `minimum_duration_minutes`, when present, is positive.
+- Deposit amount/currency are paired and non-negative. They remain
+  informational in Phase 1.
+- `(kitchen_space_id, id, version)` identifies the version shown to a Chef;
+  updates use optimistic locking and cannot change historical snapshots.
+- A RentalOffer referenced by a request is deactivated/versioned rather than
+  hard-deleted; the booking FK and immutable snapshot remain valid.
+
+Estimate rules are deterministic and snapshotted. HOURLY uses
+`amount_minor * billable_minutes / 60` only when the result is an exact integer
+minor-unit value; otherwise it is `REQUIRES_CONFIRMATION` and the system does
+not invent a rounding rule. FIXED_BLOCK calculates only an integer number of
+whole blocks. DAILY calculates only an integer number of complete configured
+local day definitions. RECURRING_HOURS and MONTHLY_HOURS display their stated
+plan/commitment without a one-off prorated estimate. PRIVATE_LONG_TERM_INQUIRY
+has no calculated amount.
+
+For these calculations, billable duration is the concrete requested use
+interval `start_at` through `cooking_end_at`; cleaning extends protected
+occupancy to `occupancy_end_at` but is not silently billed. A
+`KITCHEN_LOCAL_CALENDAR_DAY` is counted by Kitchen-local civil date, not as a
+fixed 24-hour duration across daylight-saving transitions. Any separately
+billable cleaning or other charge would require an explicit future commercial
+contract; an informational note alone cannot change the calculation.
+
+### Kitchen, Space, Requirement, and Media Detail
+
+Kitchen operating hours are stored in
+`kitchen.kitchen_operating_hour_rules`, not inferred from Space availability.
+Rules use ISO weekday 1–7, non-overnight local start/end, effective dates,
+active state, and version under the Kitchen timezone. Multiple non-overlapping
+windows per weekday are allowed. Operating constraints are an outer bound;
+they do not create requestable Space time.
+
+For Phase 1, `kitchen.kitchens.visibility_level` is
+`PILOT_AUTHENTICATED`: eligible authenticated invited Chefs may see the safe
+listing, while LP-01 remains public without live inventory. Publication of a
+REAL Kitchen requires `authority_affirmed = true` and an
+`affirmation_version`; this is participant declaration evidence, not Cheffy
+verification of property or re-rental rights.
+
+Kitchen presentation also stores bounded operator-authored
+`loading_parking_summary`, `storage_summary`, and `facility_constraints`.
+Operating-hours summary is derived from the active typed operating-hour rules;
+private access/orientation instructions remain on Location and are never
+copied into discovery fields. `published_at` is null before first publication
+and thereafter records the most recent transition into `PUBLISHED`; unpublish
+retains it, while append-only publication history preserves every transition.
+
+`kitchen.kitchen_spaces` requires positive capacity, non-negative cleaning,
+`storage_mode IN ('NONE','AVAILABLE','SHARED','DISCUSS')`,
+`exclusivity_mode = 'EXCLUSIVE_SPACE'`, and `status IN ('ACTIVE','INACTIVE')`.
+Optional size requires both `size_value > 0` and a controlled `size_unit`, or
+both size fields are null. Optional `maximum_booking_minutes` is positive and
+is a physical operating limit, not a price or minimum commitment.
+Public access summary and bounded operating constraints are listing content;
+private access instructions stay on Location. Deactivation preserves history
+and is rejected when it would conceal future confirmed commitments.
+
+`kitchen.kitchen_operator_requirements` stores bounded operator-authored
+requirements. A request answer references that typed requirement and uses
+immutable `submitted_status IN ('NOT_PROVIDED','DECLARED')`. An append-only
+`booking_requirement_reviews` row may add the derived current status
+`REVIEWED_OUTSIDE_PLATFORM`; it is an operator/admin statement about
+off-platform review, never Cheffy verification. Optional reference text is
+bounded and must not contain credential documents. Equipment needs use the
+separate normalized `booking.booking_equipment_needs` table.
+
+`media.media_assets` stores metadata and an opaque object-storage key, not
+public provider URLs as authority. Status is `PENDING`, `READY`, `REJECTED`, or
+`DELETED`; only validated `READY` images can appear. Kitchen/Space join tables
+own ordering, `DISCOVERY_SAFE|PRIVATE` visibility, and optional participant-authored
+English/French alt text/captions. Missing translations are not fabricated.
+Space media is optional and may fall back to safe Kitchen media at read time.
+Object uploads use the existing presigned-upload/confirmation architecture and
+must pass MIME, size, ownership, and safe-delivery validation.
+
+### Space Availability Constraints and Precedence
+
+`kitchen.space_availability_rules` has constrained orthogonal kinds:
+
+- `availability_kind IN ('AVAILABLE', 'BLOCKED')`.
+- `schedule_kind IN ('ONE_TIME', 'WEEKLY')`.
+- `local_start_time < local_end_time`; overnight rules are split at local
+  midnight in Phase 1.
+- `ONE_TIME` requires `local_date`, forbids effective-date and weekday rows.
+- `WEEKLY` forbids `local_date`, requires `effective_start_date`, permits a
+  nullable `effective_end_date >= effective_start_date`, and requires one or
+  more unique weekday rows with ISO day 1–7.
+
+One-time offset fields are null for unambiguous local boundaries and required
+to select a valid occurrence when a boundary falls in a DST overlap. A gap is
+invalid. Weekly offset fields are always null because a fixed offset would
+corrupt seasonal recurrence. Phase 1 stores no Space-availability occurrence
+rows; bounded resolution returns a dated exception for an unresolved gap or
+overlap. A future persistent materializer requires an explicit occurrence and
+error schema.
+
+This replaces `kitchen.kitchen_availabilities` and
+`kitchen.kitchen_space_availabilities` as the canonical Kitchen-marketplace
+availability representation. Kitchen operating hours remain separate
+constraints and do not create availability.
+
+Evaluation applies active rules/version at the requested local date. An
+`AVAILABLE` match is required; a `BLOCKED` match vetoes; then overlapping
+`HELD`/`CONFIRMED` occupancy vetoes. RentalOffer duration/commitment and
+declared-requirement checks follow. A hard duration/commitment failure is no
+match; equipment, shared-resource, or operator-specific conditions requiring
+human review derive `POSSIBLE_OPERATOR_CONFIRMATION_REQUIRED` rather than a
+false deterministic match. The same gates are re-evaluated at request
+submission and confirmation. A rule change never edits or deletes an existing
+confirmed booking. Inserting or activating a `BLOCKED` rule that matches a
+future `HELD`/`CONFIRMED` booking is rejected with no partial rule change; the
+explicit booking-cancellation workflow must run first. Pending requests remain
+`REQUESTED` and derive a current incompatibility warning from re-evaluation.
+
+### Request, Snapshot, and History Constraints
+
+`kitchen.kitchen_bookings.status` allows the long-term ADR-007 values but the
+Phase-1 transition set is limited to `REQUESTED`, `CONFIRMED`, `DECLINED`,
+`WITHDRAWN`, and `CANCELLED`. `REQUESTED` is non-reserving. The required Phase-1
+transitions are exactly `REQUESTED -> CONFIRMED|DECLINED|WITHDRAWN` and
+`CONFIRMED -> CANCELLED`.
+
+`start_at < cooking_end_at <= occupancy_end_at`; the last boundary equals cooking end
+plus the snapshotted cleaning duration. `hold_expires_at` is null for Phase-1
+requests. Every transition appends `booking.booking_status_history` with actor,
+source role, correlation ID, the command-receipt reference, time, and optional
+controlled reason. Decline, withdrawal, and cancellation preserve the
+aggregate and snapshots. In Phase 1, `start_at`, `cooking_end_at`,
+`occupancy_end_at`, `kitchen_space_id`, `chef_profile_id`, and
+`rental_offer_id` are immutable after submission; rescheduling is a future
+explicit workflow rather than an update of request evidence.
+
+Each Phase-1 booking has exactly one immutable
+`booking.booking_request_snapshots` and one immutable
+`booking.booking_rental_offer_snapshots` row inserted in the same transaction
+as the request, and its `rental_offer_id` is required. The optional ERD
+cardinality preserves other accepted long-term KitchenBooking creation contexts
+that may use their own typed commercial evidence; it is not optional for this
+pilot. The request snapshot repeats the submitted use and occupancy instants as
+historical evidence and they must equal the immutable KitchenBooking boundaries
+at insert. Snapshot columns are explicit and bounded.
+`estimate_status` is `CALCULATED`, `NOT_APPLICABLE`, or
+`REQUIRES_CONFIRMATION`. No snapshot or requirement stores credentials, exact
+address, access instructions, private contact information, or an unbounded
+object graph. `booking.booking_requirement_declarations` references a typed
+operator requirement and preserves submitted `NOT_PROVIDED` or `DECLARED`;
+append-only review evidence can derive `REVIEWED_OUTSIDE_PLATFORM` without
+rewriting the submitted answer. `booking.booking_equipment_needs` separately
+normalizes catalog equipment needs and optional quantities. There is exactly
+one declaration per active operator requirement shown at submission, unique on
+`(kitchen_booking_id, operator_requirement_id)`; it snapshots requirement
+version/code/title/prompt. Equipment needs snapshot the displayed catalog name
+and applicable Space offering mode. Later requirement, equipment-catalog, or
+Space-offering edits therefore do not rewrite what either party reviewed.
+
+`booking.booking_command_receipts` is the booking-domain idempotency authority
+for request submission and booking transitions; it does not reuse
+`financial.idempotency_keys`. It is unique on `(data_scope_id, actor_user_id,
+operation_type, idempotency_key_hash)`, stores a request hash, and rejects reuse
+of the same key for a different request. Status is `IN_PROGRESS`, `COMPLETED`,
+or `FAILED`. A successful state change, its receipt,
+status history, and outbox row commit atomically. A completed receipt may retain
+only a versioned, schema-bounded safe response snapshot; it must not retain raw
+Idempotency-Key values, private request text, address/access data, or provider
+credentials.
+
+### Profiles, Address Disclosure, Equipment, Feedback, and Notifications
+
+`identity.participant_profiles.user_id` is unique. Auth0's `auth_subject`
+authenticates the User; profile fields remain application data. Locale is
+`en-CA` or `fr-CA`. Business email is private and its verified flag is derived
+from the trusted identity flow, never an editable client assertion. Phone,
+role/title, and general business information are private optional fields.
+`organization.organization_profiles` holds optional Organization-level general
+information separately from Kitchen listing content. `chef.chef_profiles.user_id` is unique and the category
+join has primary key `(chef_profile_id, business_category_id)`. `OTHER`
+requires bounded `other_business_category`; other categories forbid it.
+`chef_profiles.business_display_name` is an optional participant-facing
+trading/display label; it is not a second authoritative Organization or
+ChefBusiness legal name. A request snapshots that display label as evidence.
+Operator authority is derived from active Organization membership/role and
+resource ownership/assignment—there is no one-operator-per-Kitchen column.
+The bounded pilot role codes are `OPERATOR_OWNER`, `OPERATOR_MANAGER`, `CHEF`,
+and `ADMIN`. The first two are `ORGANIZATION` roles assigned through
+`organization_members`; `CHEF` and `ADMIN` are `PLATFORM` grants in
+`user_platform_roles`, so a platform admin is not fabricated as an Organization
+member. Role/permission joins provide the granular codes in the P1 product
+permission matrix. `organization_member_kitchen_assignments` restricts a
+manager to explicit Kitchens in the same Organization; an owner derives access
+to that Organization's Kitchens. These grants do not replace membership,
+ownership, scope, or resource-state checks, and one User may hold more than one
+role. Grant/assignment changes are audited through the repository audit
+boundary.
+
+`organization_members` is unique on `(organization_id, user_id)`. Its role must
+have `scope_kind = 'ORGANIZATION'`; `user_platform_roles` accepts only
+`scope_kind = 'PLATFORM'`. A composite constraint or trigger verifies every
+Kitchen assignment belongs to the member's Organization. The required pilot
+permission codes remain the product-owned set for self profile,
+Organization/Kitchen read and management, publication, availability,
+request create/read/decision, booking cancellation, pilot authorization, and
+account deactivation; role bundles never become authorization shortcuts.
+
+`organization.locations.private_point`, street address, postal code, and
+`access_instructions` are private. `public_area_name` and intentionally coarse
+`public_area_point` are discovery-safe. Database access does not itself grant
+API disclosure: exact fields are selected only for authorized parties to a
+confirmed booking under `address_disclosure_policy`. Phase 1 constrains that
+policy to `CONFIRMED_PARTIES_ONLY`; any additional disclosure policy requires
+an explicit contract change.
+
+`equipment.space_equipment.availability_mode` is `INCLUDED`, `SHARED`,
+`EXTRA_DISCUSS`, or `UNAVAILABLE`, with unique
+`(kitchen_space_id, equipment_catalog_item_id)`. These rows are descriptive in
+Phase 1. `equipment.equipment_rentals`, bookings, and allocations remain the
+deferred paid/capacity model; `EXTRA_DISCUSS` does not create them.
+
+`feedback.feedback_submissions.feedback_text` and `route_context` are bounded;
+`role_context` is `OPERATOR` or `CHEF`; `category` is `AVAILABILITY`,
+`PRICING`, `KITCHEN_LISTING`, `BOOKING_REQUEST`, `OPERATOR_WORKFLOW`,
+`CHEF_WORKFLOW`, `REQUIREMENTS_COMPLIANCE`, or `OTHER`;
+`triage_status` is `NEW`, `IN_REVIEW`, `RESOLVED`, or `DISMISSED`. A check
+requires that `related_resource_kind` match exactly one corresponding typed FK,
+or that the kind and all four FKs are null. Feedback text is never copied into
+outbox events, analytics, or logs.
+
+`notification.notifications` has an idempotency uniqueness key on recipient,
+notification type, booking, and source event ID. Phase-1 notification type is
+`BOOKING_REQUESTED`, `BOOKING_CONFIRMED`, `BOOKING_DECLINED`,
+`BOOKING_WITHDRAWN`, or `BOOKING_CANCELLED`. `safe_template_args` is
+schema-validated and cannot contain free-form
+request text, exact address, access instructions, or private contact data.
+`notification.notification_deliveries` is unique per notification/channel;
+status is `PENDING`, `RETRY_SCHEDULED`, `SENT`, or `FAILED`. A failed delivery
+never rolls back the domain transaction.
+
 ## Timezone and Availability Semantics
 
-Timezone modeling follows the repository ADR-011 decision while ADR-011 remains Proposed until explicitly accepted. `kitchen.kitchens.iana_timezone_id` stores the Kitchen's authoritative IANA timezone identity, for example `America/Toronto`. Abbreviations and fixed offsets such as `EST`, `EDT`, or `UTC-5` are not sufficient authoritative timezone identities. Kitchen Spaces, bookings, and availability records resolve Kitchen-based business rules through their owning Kitchen rather than duplicating its timezone by default.
+Timezone modeling follows accepted ADR-011. `kitchen.kitchens.iana_timezone_id` stores the Kitchen's authoritative IANA timezone identity, for example `America/Toronto`. Abbreviations and fixed offsets such as `EST`, `EDT`, or `UTC-5` are not sufficient authoritative timezone identities. Kitchen Spaces, bookings, and availability records resolve Kitchen-based business rules through their owning Kitchen rather than duplicating its timezone by default.
 
 PostgreSQL `TIMESTAMPTZ` represents a real instant and does not preserve the original IANA timezone name or textual offset. Concrete booking boundaries, orders, payments, refunds, payouts, deliveries, outbox events, and materialized food-availability occurrence boundaries use `TIMESTAMPTZ` conceptually.
 
-`KITCHEN_AVAILABILITIES`, `KITCHEN_SPACE_AVAILABILITIES`, and `FOOD_AVAILABILITY_RULES` are recurring business-local rules. Their day/recurrence and local time-of-day values are interpreted using the authoritative owning Kitchen's IANA timezone; they are not UTC instants. `FOOD_AVAILABILITY_OCCURRENCES` represents concrete occurrences for specific dates. Its `start_at` and `end_at` are real instants materialized by resolving a rule under the Kitchen timezone, or supplied directly as real instants. A rule and an occurrence are distinct records and must not be treated as one ambiguous representation.
+`SPACE_AVAILABILITY_RULES` and `FOOD_AVAILABILITY_RULES` are business-local rules. Their local date/day and time-of-day values are interpreted using the authoritative owning Kitchen's IANA timezone; they are not UTC instants. `FOOD_AVAILABILITY_OCCURRENCES` represents concrete occurrences for specific dates. Its `start_at` and `end_at` are real instants materialized by resolving a rule under the Kitchen timezone, or supplied directly as real instants. A rule and an occurrence are distinct records and must not be treated as one ambiguous representation.
+
+DST gaps are rejected. DST overlaps require an explicit offset/occurrence or
+are rejected. Phase-1 bounded weekly resolution returns a dated exception
+rather than silently shifting a gap or selecting an overlap offset; it does not
+persist Space occurrence rows. Neither PostgreSQL session time zone nor the JVM
+default may decide business semantics.
 
 Changing a Kitchen's configured timezone affects future business-local schedule interpretation. It does not rewrite historical or already-materialized booking, order, financial, or availability occurrence instants. Explicit configuration history or effective dating may be introduced only if independently required; this model does not duplicate timezone history by default.
 
@@ -815,15 +1594,23 @@ ALTER TABLE kitchen.kitchen_bookings
     WHERE (status IN ('HELD', 'CONFIRMED'));
 ```
 
-The half-open range permits a subsequent booking to begin exactly when the previous booking's complete occupancy, including cleaning, ends. Only `HELD` and `CONFIRMED` participate in overlap prevention. `CANCELLED` and `COMPLETED` do not block new occupancy. No additional blocking state is implied.
+The half-open range permits a subsequent booking to begin exactly when the previous booking's complete occupancy, including cleaning, ends. Only `HELD` and `CONFIRMED` participate in overlap prevention. `REQUESTED`, `DECLINED`, `WITHDRAWN`, `CANCELLED`, and `COMPLETED` do not block new occupancy. No additional blocking state is implied.
 
 The GiST exclusion constraint is the canonical concurrency protection for Kitchen Space overlap. Application checks may improve error handling but do not replace the database guarantee. ADR-007 does not use advisory locks as the default strategy.
 
 ADR-007 models a temporary hold on the booking row with `status = 'HELD'` and `hold_expires_at`. A held booking participates in the same exclusion constraint as a confirmed booking. Hold expiration must be deterministic; this ERD does not invent behavior beyond ADR-007.
 
+The Phase-1 accept transaction locks/reloads the `REQUESTED` row, performs all
+current eligibility and availability checks, calculates the cleaning-aware
+range, appends status history and outbox evidence, and attempts `CONFIRMED`.
+The GiST constraint is the final arbiter. An exclusion violation maps to
+`BOOKING_CONFLICT`; the transaction rolls back so the losing row remains
+`REQUESTED`. No request is deleted or automatically declined because another
+request won.
+
 ### Equipment Booking and Allocation
 
-`equipment.equipment_catalog_items` contains reusable equipment type/catalog definitions; catalog rows are not finite reservable capacity. `equipment.space_equipment` associates catalog equipment with one Kitchen Space and primarily represents baseline/included equipment. `equipment.equipment_rentals` represents additional rentable inventory offers for one Kitchen Space. Each EquipmentRental owns its catalog reference, price and currency, lifecycle/status, and authoritative finite `quantity_available`.
+`equipment.equipment_catalog_items` contains reusable equipment type/catalog definitions; catalog rows are not finite reservable capacity. In Phase 1, `equipment.space_equipment` associates catalog equipment with one Kitchen Space and describes its `availability_mode`; it does not reserve capacity. `equipment.equipment_rentals` represents the deferred additional rentable inventory model for a future paid workflow. Each EquipmentRental owns its catalog reference, price and currency, lifecycle/status, and authoritative finite `quantity_available` when that later capability is activated.
 
 The current resource scope is per Kitchen Space: `equipment.equipment_rentals.id` is the authoritative reservation and serialization key. The model does not contain a duplicate `MASTER_EQUIPMENT` capacity entity and does not infer a shared Kitchen-wide pool. Equipment shared across Spaces requires a separate approved business and architecture model.
 

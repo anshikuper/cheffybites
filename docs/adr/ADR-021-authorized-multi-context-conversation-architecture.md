@@ -820,7 +820,7 @@ Rejected because authoritative state changes require explicit structured command
 - **ADR-006 — Promotion Targeting Model (Accepted):** Promotion ownership and targeting remain separate from Conversation and Message content.
 - **ADR-009 — Outbox Table Schema (Accepted):** asynchronous Conversation, delivery, moderation, and notification effects use transactional-outbox persistence where appropriate.
 - **ADR-010 — UUIDv7 Identifier Strategy (Proposed):** future Conversation records follow the repository identifier direction without treating UUID order as Message chronology.
-- **ADR-011 — Timezone Modeling (Proposed):** Conversation and Message occurrences use real-instant semantics; server local time is not authoritative.
+- **ADR-011 — Timezone Modeling (Accepted):** Conversation and Message occurrences use real-instant semantics; server local time is not authoritative.
 - **ADR-012 — Payment Marketplace Settlement (Proposed):** Payment, Refund, Payout, and provider orchestration remain Financial concerns and cannot be created from chat text.
 - **ADR-013 — ChefOrderGroup Aggregate + Financial Boundary (Proposed):** ChefOrderGroup may provide typed Order communication authorization evidence but does not become Conversation, participant, or Message thread.
 - **ADR-014 — Promotion Engine (Proposed):** Promotion evaluation, application, redemption, restoration, and funding semantics remain Promotion-owned.

@@ -130,10 +130,9 @@ Can:
 - Operate kitchens in multiple physical locations.
 - Create multiple rentable spaces/units inside a kitchen.
 - Define base equipment for each space.
-- Offer additional equipment for hourly rental.
+- Describe included, shared, unavailable, or additional equipment to discuss.
 - Define operating hours.
-- Define hourly pricing.
-- Define minimum booking duration.
+- Define one or more RentalOffers using approved rate bases and terms.
 - Define cleaning time.
 - Manage bookings.
 - Manage Chef access/use of spaces.
@@ -300,6 +299,15 @@ Recommended future domain:
 `https://admin.cheffybites.com`
 
 The admin application must never be exposed as a normal customer-facing application.
+
+## 4.5 Phase-1 Web Deployment Exception
+
+The long-term experience boundaries above remain the product direction. For
+the bounded Chef-to-Kitchen pilot, ADR-025 authorizes one deployed Next.js
+application in `apps/customer-web`: the LP-01 public credibility surface plus
+protected `/app/operator/*` and `/app/chef/*` routes. This deployment choice
+does not merge roles, backend authorization, domain ownership, or the reserved
+long-term `business-web` and `chef-web` applications.
 
 ---
 
@@ -522,14 +530,26 @@ Each Space has:
 - Size
 - Capacity
 - Images
-- Included equipment
-- Optional equipment available for rental
-- Hourly rate
-- Minimum booking duration
+- Equipment offerings classified as `INCLUDED`, `SHARED`, `EXTRA_DISCUSS`, or
+  `UNAVAILABLE`
+- One or more versioned RentalOffers
 - Maximum duration if applicable
 - Cleaning duration
 - Availability
 - Status
+
+`RentalOffer`, not KitchenSpace, is the canonical owner of current rental
+pricing and minimum commitment terms. Supported Phase-1 bases are `HOURLY`,
+`FIXED_BLOCK`, `DAILY`, `RECURRING_HOURS`, `MONTHLY_HOURS`, and
+`PRIVATE_LONG_TERM_INQUIRY`. Monetary offers use integer minor units and an
+explicit currency; private long-term inquiries may intentionally omit a price.
+Deposits and additional-charge notes are informational in Phase 1 and do not
+create a Payment or financial obligation.
+
+Phase-1 estimates use the requested cooking/use interval, not the cleaning
+extension. Cleaning protects occupancy but is not silently billed. A
+Kitchen-local calendar-day offer counts civil dates rather than fixed 24-hour
+chunks across daylight-saving transitions.
 
 ## 7.4 Booking Occupancy
 
@@ -549,6 +569,33 @@ Resource Occupied:
 ```
 
 Another Chef cannot book the same Space during any part of the occupied period.
+
+## 7.5 Phase-1 Listing, Requirements, and Media
+
+A pilot Kitchen records facility type, intended-use statement, public
+accessibility summary, loading/parking summary, facility storage summary,
+facility constraints, visibility level, operating-hour constraints, and
+operator-authored requirements. A Space records public access summary, storage
+mode (`NONE`, `AVAILABLE`, `SHARED`, or `DISCUSS`), bounded operating
+constraints, optional positive size/unit and maximum use duration,
+`EXCLUSIVE_SPACE`, active state, and non-negative cleaning time.
+Operating hours constrain Space availability but never create it.
+
+Publishing a REAL Kitchen requires the operator's versioned authority
+affirmation. The affirmation and platform pilot authorization are evidence of
+participant/platform decisions, not verification of property ownership,
+compliance, or sublicense/re-rental rights.
+
+Only validated media may appear in a listing. Kitchen/Space media associations
+own ordering, visibility, and participant-authored English/French alt text and
+captions; missing translations are not fabricated. Space media may fall back
+to safe Kitchen media. Uploads use the approved object-storage confirmation and
+validation path.
+
+An operator requirement is answered with only `NOT_PROVIDED`, `DECLARED`, or
+`REVIEWED_OUTSIDE_PLATFORM`. These statuses never mean Cheffy Bites verified a
+credential. Phase 1 stores no credential, insurance, permit, contract,
+identity, banking, or tax document.
 
 ---
 
@@ -586,7 +633,21 @@ A Kitchen Space can select equipment from the master catalog as included equipme
 
 Entrepreneurs should not manually create every common piece of equipment.
 
-## 8.3 Additional Equipment Rental
+## 8.3 Phase-1 Equipment Offering and Future Rental
+
+For the Phase-1 pilot, Space equipment is descriptive request context. The
+operator assigns exactly one mode:
+
+```text
+INCLUDED | SHARED | EXTRA_DISCUSS | UNAVAILABLE
+```
+
+`EXTRA_DISCUSS` permits a Chef to declare a need and the operator to discuss
+it. It does not reserve inventory, establish a price, or create payment or
+settlement state.
+
+The additional-equipment rental capability below is a later paid-marketplace
+capability and is not part of the Phase-1 request flow.
 
 Additional equipment can be independently rented on an hourly basis.
 
@@ -623,15 +684,32 @@ Entrepreneurs can configure:
 - Holidays.
 - Temporary closure.
 - Special hours.
-- Blackout periods.
-- Hourly rate.
-- Minimum booking hours.
+- One-time available periods.
+- Recurring weekly available periods with effective dates.
+- One-time blocked periods.
+- Recurring weekly blocked periods.
 - Cleaning duration.
-- Additional equipment rates.
+- RentalOffers and equipment offering modes.
 
 The availability engine must distinguish recurring business-local schedules from concrete occurrences. Kitchen operating hours, recurring Kitchen availability, and recurring Chef availability use local date/time semantics plus the Kitchen's IANA timezone. Concrete occurrences for specific dates are resolved under that timezone's rules and materialized as real instants.
 
 The Kitchen timezone is authoritative for Kitchen booking, operating-hours, Chef-availability, and similar Kitchen-based rules. Store an IANA identifier such as `America/Toronto`, not only `EST`, `EDT`, or `UTC-5`. Customer, device, and browser timezones may affect display but do not override the Kitchen timezone for these rules.
+
+Availability attaches to a Space. Kitchen operating hours constrain a Space's
+offerable time; they do not create availability. At least one matching active
+available rule is required, any matching active blocked rule vetoes it, and
+overlapping `HELD` or `CONFIRMED` occupancy vetoes it. Stage, record scope,
+publication, pilot authorization, active Space, current RentalOffer, and
+hard duration/commitment gates also apply. Equipment, shared-resource, or
+operator-specific conditions that require human review produce `POSSIBLE —
+OPERATOR CONFIRMATION REQUIRED` rather than a false match. Search is advisory;
+submission and confirmation revalidate current rules.
+
+Creating or activating a blocked rule that would contradict future
+`HELD`/`CONFIRMED` occupancy is rejected until the booking is explicitly
+cancelled. Pending requests remain `REQUESTED` and are shown as currently
+incompatible when re-evaluation fails; no availability edit silently changes
+their history.
 
 ---
 
@@ -644,40 +722,133 @@ Search Kitchen / Space
         ↓
 Select Date / Time
         ↓
-Validate Space Availability
+Review RentalOffer and estimate/disclaimer
         ↓
-Select Additional Equipment
+Declare activity, equipment, storage, setup, and cleanup needs
         ↓
-Validate Equipment Availability
+Submit KitchenBooking in REQUESTED state
         ↓
-Calculate Base Price
-        ↓
-Apply Entrepreneur Promotion
-        ↓
-Calculate Fees + Taxes
-        ↓
-Checkout
-        ↓
-Payment
-        ↓
-Booking Confirmed
+Operator confirms or declines; Chef may withdraw while requested
 ```
 
-## 10.2 Temporary Hold
+Phase-1 submission does not reserve capacity and does not require checkout or
+payment. `KitchenBooking` owns the lifecycle; there is no separate persistent
+BookingRequest aggregate.
 
-When a Chef selects a Space and begins checkout, the resource may be temporarily held.
+## 10.2 Phase-1 Booking States and Concurrency
 
 ```text
-AVAILABLE
-   ↓
-TEMPORARILY_HELD
-   ├── Payment Success → CONFIRMED
-   └── Payment Failed/Expired → AVAILABLE
+REQUESTED -> CONFIRMED
+REQUESTED -> DECLINED
+REQUESTED -> WITHDRAWN
+CONFIRMED -> CANCELLED
 ```
 
-Hold duration is configurable.
+`REQUESTED`, `DECLINED`, `WITHDRAWN`, and `CANCELLED` do not reserve the Space.
+`CONFIRMED` reserves the cooking and cleaning occupancy interval. `HELD`
+remains available to a future paid workflow under ADR-007 but is not entered
+by this pilot.
 
-The booking mechanism must prevent race conditions and double booking.
+Operator confirmation revalidates authority, request state, stage,
+publication, pilot authorization, current Space availability, RentalOffer,
+requirements, and cleaning-aware occupancy in one transaction. ADR-007's
+database exclusion constraint is final authority. If two requests compete for
+the same capacity, at most one confirmation commits; the loser receives a
+booking-conflict result and remains `REQUESTED`. A decision/withdrawal race is
+also first-valid-transition-wins.
+
+Confirmed cancellation releases capacity without deleting or rewriting
+history. A later availability edit never silently cancels a confirmed booking.
+
+## 10.3 Request Evidence and Address Disclosure
+
+Submission freezes the selected offer/version and the Kitchen, Space,
+timezone, requested instants, cleaning occupancy, Chef profile/business label,
+activity, equipment/storage/setup/cleanup declarations, estimate method, and
+disclaimer evidence needed to explain the decision later. Core references and
+requirement declarations remain normalized rather than stored as one untyped
+JSON document. Requirement rows snapshot the presented version/code/title/
+prompt; equipment needs snapshot the displayed catalog label and applicable
+offering mode. State changes are append-only history records with actor, time,
+source role, and bounded reason code/note.
+
+The Phase-1 requested Space, Chef, offer, use boundaries, and occupancy end are
+immutable after submission; rescheduling is a future explicit workflow. Request
+and transition commands use a booking-domain idempotency receipt scoped to the
+authenticated actor, data scope, operation, key hash, and request hash. The
+receipt, transition history, and outbox evidence commit with a successful
+state change and do not reuse financial idempotency records.
+
+Authenticated pilot discovery exposes only an operator-approved coarse area
+and safe distance information. The exact Location address, coordinates, and
+access instructions remain private and are disclosed only to authorized
+parties of a confirmed booking under the applicable policy. They must not leak
+through search responses, logs, analytics, SEO metadata, or sitemaps.
+
+## 10.4 Phase-1 Payment Boundary
+
+The pilot request, confirmation, decline, withdrawal, and cancellation flow
+creates no Payment, PaymentAttempt, PaymentAllocation, tax, payout, ledger,
+checkout, or provider client secret. The future financial architecture in
+Sections 33–45 remains the long-term billable-marketplace model and is not a
+Phase-1 dependency. A paid Kitchen-booking workflow requires an explicit
+financial decision and separate checkout contract; it must not silently change
+the meaning of the pilot request endpoints.
+
+## 10.5 DEMO / REAL and Pilot Controls
+
+Every pilot business record belongs to an immutable data scope classified as
+`DEMO` or `REAL`. A DEMO participant or record cannot be converted to REAL;
+real onboarding creates fresh REAL records. Local/staging demo identity and
+data are isolated from production. Reset operations are limited to explicitly
+resettable DEMO scopes, are deterministic and audited, and can never target
+REAL records.
+
+The platform stage is explicitly `PRE_PILOT` or `CONTROLLED_PILOT`. Operator
+publication (`DRAFT`, `PUBLISHED`, or `UNPUBLISHED`) and platform pilot
+authorization are independent gates. A Kitchen is requestable only when the
+caller is in a permitted data scope, the relevant stage permits it, the
+operator has published it, the platform has an active pilot authorization, and
+the Space, RentalOffer, and future availability are active. An emergency admin
+may unpublish with an actor, time, and reason audit record; that action is not
+represented as an operator decision.
+
+Discovery, new-request submission, and confirmation enforce current data-scope
+and pilot-requestability gates on the server. Existing request/booking detail,
+inbox, notification, feedback, and administration history continue to enforce
+scope, ownership, and authorization but are not erased or hidden solely by a
+later unpublish or pilot-authorization revocation. DEMO content appears only in
+an explicit permitted demo context and never leaks into REAL discovery or
+reporting.
+
+## 10.6 Availability and DST Validation
+
+One-time and weekly Space rules use business-local dates/times, effective
+dates, `active`, and `version`, interpreted in the Kitchen's IANA timezone.
+Following accepted ADR-011, nonexistent gap times are rejected and ambiguous
+overlap times require an explicit intended offset/occurrence or are rejected.
+No service may inherit the JVM default timezone or silently shift/guess.
+Concrete request and booking boundaries are real instants.
+
+## 10.7 Bounded Pilot Feedback
+
+Authenticated operators and Chefs may submit private pilot feedback with a
+controlled role context and category, bounded text, locale, route context, and
+at most one typed related Kitchen, Space, RentalOffer, or KitchenBooking. It is
+for internal triage, not public review or chat. Feedback text is excluded from
+events, analytics payloads, and ordinary logs.
+
+## 10.8 Durable Notifications
+
+Request, confirmation, decline, withdrawal, and cancellation transitions
+create durable in-app notification records through idempotent event handling.
+Email delivery is asynchronous and retryable; a provider failure never rolls
+back the committed domain transition. Notifications snapshot the recipient
+locale and safe template arguments, while the in-app detail view reloads the
+authoritative current booking state. SMS is outside the pilot. Push remains a
+later native P1 channel using the same domain events; its device-registration
+and delivery contract belongs to that implementation slice, not the web-first
+P0 contract.
 
 ---
 
@@ -695,6 +866,25 @@ Chef profile supports:
 - Service locations
 - Ratings
 - Reviews
+
+For the pilot, Auth0 owns credentials and authentication only. Cheffy Bites
+stores a participant profile for display/contact name, preferred `en-CA` or
+`fr-CA` locale, optional phone, and application status, plus a distinct Chef
+profile with an optional business display/trading label, description/intended
+activity, coarse operating area, and controlled multi-select business
+categories. The membership chain is
+`User -> OrganizationMembership -> Organization ->
+Location -> Kitchen -> Space`; an operator is an authorized member, not an
+assumed one-user-per-Kitchen record.
+
+The bounded pilot role codes are `OPERATOR_OWNER`, `OPERATOR_MANAGER`, `CHEF`,
+and `ADMIN`, mapped to granular permissions. Operator roles are scoped through
+Organization membership; Chef/Admin are platform grants, and a manager's
+Kitchen assignment is explicit. Role codes never replace Organization
+membership, assigned-Kitchen, ownership, data-scope, or current resource-state
+authorization, and one User may hold multiple roles. A Chef
+business display label is presentation data, not a competing authoritative
+Organization or ChefBusiness legal name.
 
 A Chef may operate independently or belong to an Organization/Chef Business with multiple Chefs and authorized staff. Organization membership does not erase the actual Chef performer. If Chef Ravi and Chef Maria work for the same Organization and participate in one valid same-Kitchen Order, they remain separate Chef identities and separate ChefOrderGroups for preparation, authorization, operational history, performance, review eligibility, and refund/quality traceability where relevant.
 
@@ -2062,6 +2252,10 @@ Cheffy's commercial fee arrangement applies to the commercial provider. An emplo
 
 # 37. Kitchen Booking Financial Model
 
+This section is the target model for a future paid Kitchen-booking workflow.
+It is not active in the Phase-1 Chef-to-Kitchen pilot defined in Section 10.
+The pilot records no financial obligation and requires no payment.
+
 For Kitchen Booking:
 
 ```text
@@ -2565,6 +2759,12 @@ The three applications should share:
 
 Do not force unrelated screens/business logic into a giant shared component package.
 
+For Phase 1, ADR-025 is the bounded exception: `apps/customer-web` is the one
+deployed web application and contains the public LP-01 surface plus protected
+`/app/operator/*` and `/app/chef/*` routes. `apps/business-web` and
+`apps/chef-web` remain reserved for later independent deployments. Route-level
+separation does not weaken backend authorization or domain boundaries.
+
 ---
 
 # 49. Backend Architecture
@@ -2762,22 +2962,47 @@ Initial conceptual entities include:
 
 ```text
 User
+ParticipantProfile
+UserStatusHistory
+DataScope
+DemoResetRun
 Organization
+OrganizationProfile
 OrganizationMember
+OrganizationMemberKitchenAssignment
 Role
 Permission
+RolePermission
+UserPlatformRole
 
 EntrepreneurBusiness
 Location
 Kitchen
 KitchenSpace
-KitchenAvailability
+KitchenOperatingHourRule
+KitchenOperatorRequirement
+KitchenPublicationHistory
+RentalOffer
+SpaceAvailabilityRule
 KitchenBooking
+BookingRequestSnapshot
+BookingRentalOfferSnapshot
+BookingRequirementDeclaration
+BookingRequirementReview
+BookingEquipmentNeed
+BookingCommandReceipt
+BookingStatusHistory
+KitchenPilotAuthorization
+PilotStage
+PilotStageHistory
+
+MediaAsset
+KitchenMedia
+SpaceMedia
 
 EquipmentCatalogItem
 KitchenSpaceEquipment
 EquipmentRental
-EquipmentAvailability
 
 ChefProfile
 ChefBusiness
@@ -2857,7 +3082,7 @@ MealFulfillmentOccurrence
 KitchenSubscriptionOffer
 ChefKitchenSubscription
 KitchenEntitlementCycle
-RecurringKitchenBookingRequest
+KitchenBookingRecurrencePattern (future; Proposed ADR-019, not a P1 BookingRequest aggregate)
 
 FoodRequest
 FoodRequestInterest
@@ -2865,7 +3090,9 @@ FoodRequestSubscription
 FoodRequestResponse
 
 Notification
+NotificationDelivery
 NotificationPreference
+FeedbackSubmission
 AuditLog
 ```
 
@@ -2900,7 +3127,7 @@ Use UUID/UUIDv7 or another time-sortable unique identifier strategy consistently
 
 ## Dates
 
-Timezone modeling follows the repository ADR-011 decision while its ADR status remains governed by `docs/adr/`; ADR-011 remains Proposed until explicitly accepted.
+Timezone modeling follows accepted ADR-011. Its status remains governed by the standalone ADR.
 
 Distinguish two kinds of time data:
 
@@ -3207,6 +3434,12 @@ Events should not make transactional requests wait for every notification provid
 
 Use an asynchronous worker.
 
+The Phase-1 Kitchen pilot persists durable in-app Notifications and separate
+per-channel delivery attempts. It uses in-app and email only. Delivery is
+idempotent and retryable, stores no private free text or exact address in the
+event/template payload, and never controls the success of the booking state
+transition.
+
 ---
 
 # 66. Event-Driven Architecture
@@ -3237,6 +3470,10 @@ PromotionApplied
 PromotionInvalidated
 KitchenBookingConfirmed
 KitchenBookingCancelled
+KitchenBookingRequested
+KitchenBookingDeclined
+KitchenBookingWithdrawn
+KitchenPublished
 FoodRequestCreated
 FoodRequestFulfilled
 FoodPublished
@@ -3981,7 +4218,7 @@ The MVP should focus on proving the two-sided marketplace first.
 - Base cloud infrastructure
 - CI/CD
 
-## Phase 2 — Kitchen Marketplace
+## Phase 2 — Paid Kitchen Marketplace (after the request-only pilot)
 
 - Kitchen
 - Spaces
@@ -4778,6 +5015,11 @@ The technology recommendations in this document should be verified against offic
 # 110. Document Status
 
 This document is the **current product and business specification**.
+
+The Phase-1 Chef-to-Kitchen pilot business rules were reconciled by
+`P1-ARCH-01` and ADR-024/ADR-025. The earlier generic paid-booking material is
+the long-term target and does not override the explicit request-only Phase-1
+scope in Sections 7–10.
 
 Product and business requirements are substantially defined.
 

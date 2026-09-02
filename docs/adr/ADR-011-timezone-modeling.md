@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed
+Accepted
+
+Accepted during `P1-ARCH-01` architecture reconciliation on 2026-09-01.
+The review found the decision mature, internally consistent, and compatible
+with the canonical product, persistence, API, and event contracts. Domain
+contracts still own their recurrence shapes, but they may not override this
+ADR's instant, IANA-zone, DST-disambiguation, or history-preservation rules.
 
 ## Context
 
@@ -476,6 +482,29 @@ For future unmaterialized recurrences, the owning scheduling or subscription
 architecture decides whether a timezone change affects future materialization,
 requires versioning, or requires explicit user confirmation. ADR-011 never
 silently rewrites already materialized occurrences.
+
+## Phase-1 Kitchen Pilot Application
+
+The Phase-1 Kitchen Marketplace applies this decision as follows:
+
+-   A Kitchen's IANA timezone is authoritative for operating hours and Space
+    availability rules.
+-   One-time and weekly Space rules are stored as business-local values with
+    effective dates; they are not stored as permanently converted UTC rules.
+-   A booking request carries concrete `startAt`, `endAt`, and
+    `occupancyEndAt` instants, plus a snapshot of the Kitchen timezone used to
+    interpret and explain the request.
+-   Explicit local input in a DST gap is rejected. Explicit local input in an
+    overlap must identify the intended offset/occurrence or is rejected.
+-   Phase 1 resolves weekly rules on demand over bounded date ranges. A gap or
+    unresolved overlap is returned as a dated validation exception for operator
+    correction; it never shifts or chooses an offset silently. Any future
+    persistent materializer requires its own exact occurrence/error contract.
+-   Changing a Kitchen timezone affects future unmaterialized rules only. It
+    does not rewrite submitted requests or confirmed bookings.
+
+This application is a clarification of the accepted model, not a separate
+timezone policy.
 
 ## Scope and Responsibility Boundary
 

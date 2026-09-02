@@ -1291,7 +1291,7 @@ Rejected because ADR-001 requires the modular-monolith baseline and the current 
 - **ADR-007 — Booking Concurrency Control (Accepted):** Kitchen Space, cleaning, Equipment, holds, confirmed capacity, and subscription-funded booking concurrency remain authoritative source evidence.
 - **ADR-009 — Outbox Table Schema (Accepted):** Approved Financial events use transactional-outbox persistence with local state.
 - **ADR-010 — UUIDv7 Identifier Strategy (Proposed):** Future Financial records follow the repository identifier direction without treating UUID order as economic chronology.
-- **ADR-011 — Timezone Modeling (Proposed):** Real Financial occurrences use instant semantics; local service schedules remain owned by their business domains.
+- **ADR-011 — Timezone Modeling (Accepted):** Real Financial occurrences use instant semantics; local service schedules remain owned by their business domains.
 - **ADR-012 — Payment Marketplace Settlement (Proposed):** Payment, PaymentAttempt, PaymentAllocation, Refund orchestration, Payout execution, ProviderEvent, and provider adapters remain ADR-012 concerns.
 - **ADR-013 — ChefOrderGroup Aggregate + Financial Boundary (Proposed):** ChefOrderGroup remains actual-Chef operational and source-traceability evidence and does not become a Financial aggregate.
 - **ADR-014 — Promotion Engine (Proposed):** Promotion evaluation, funding semantics, application, redemption, restoration, and immutable evidence remain Promotion-owned.

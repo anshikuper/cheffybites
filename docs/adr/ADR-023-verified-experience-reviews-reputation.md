@@ -720,7 +720,7 @@ Rejected because ADR-001 establishes a modular monolith and no demonstrated oper
 - **ADR-007 — Booking Concurrency Control (Accepted):** KitchenBooking, Space, EquipmentRental, capacity, cancellation, and provider-failure evidence remain owned by booking/Kitchen domains and may support typed eligibility or reliability.
 - **ADR-009 — Outbox Table Schema (Accepted):** important Review lifecycle propagation uses accepted transactional-outbox persistence where appropriate.
 - **ADR-010 — UUIDv7 Identifier Strategy (Proposed):** Review-related identities follow repository identifier direction; time ordering is never inferred from UUID alone.
-- **ADR-011 — Timezone Modeling Strategy (Proposed):** Review lifecycle timestamps are real instants, and any future local deadline requires explicit timezone semantics.
+- **ADR-011 — Timezone Modeling Strategy (Accepted):** Review lifecycle timestamps are real instants, and any future local deadline requires explicit timezone semantics.
 - **ADR-012 — Payment / Marketplace Settlement (Proposed):** Payment and Refund remain separate from Review eligibility, publication, and editorial control.
 - **ADR-013 — ChefOrderGroup Aggregate + Financial Boundary (Proposed):** ChefOrderGroup supplies Food actual-performer and item-boundary evidence but is not Review, Rating, or Reputation.
 - **ADR-014 — Promotion Engine (Proposed):** Promotion and incentive policy cannot alter rating value or purchase positive sentiment; Review incentives are not required MVP functionality.

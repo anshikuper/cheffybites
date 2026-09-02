@@ -207,6 +207,12 @@ Do not reorganize the repository unless the architecture documentation is update
 
 Cheffy Bites has three primary user experiences.
 
+Phase-1 deployment exception: accepted ADR-025 uses one deployed Next.js app
+in `apps/customer-web` for the LP-01 public surface and protected
+`/app/operator/*` and `/app/chef/*` routes. The three experience boundaries and
+backend authorization rules remain distinct; `business-web` and `chef-web`
+remain reserved for later independent deployment.
+
 ## Entrepreneur
 
 ```text
@@ -814,6 +820,18 @@ The database must enforce the appropriate uniqueness/exclusion constraints or tr
 
 Two concurrent requests must not be able to confirm the same unavailable resource.
 
+For the bounded Phase-1 Chef-to-Kitchen pilot, accepted ADR-024 applies:
+
+- `KitchenBooking` owns the request; no second BookingRequest aggregate exists.
+- `REQUESTED` is non-reserving; `CONFIRMED` reserves under ADR-007.
+- The pilot does not enter `HELD` and creates no Payment or checkout state.
+- `RentalOffer` is the sole current Space rental-term authority.
+- Space availability uses `AVAILABLE|BLOCKED` and `ONE_TIME|WEEKLY`, with a
+  blocked rule and `HELD|CONFIRMED` occupancy taking precedence.
+
+Implementation planning must follow the exact ERD, API, and event contracts;
+this summary does not replace those canonical representations.
+
 ---
 
 # 23. Order State Rules
@@ -990,7 +1008,7 @@ Do not introduce multiple incompatible identifier strategies without an ADR.
 
 # 30. Time and Time Zones
 
-Timezone modeling follows the repository ADR-011 decision while its ADR status remains governed by `docs/adr/`; ADR-011 remains Proposed until explicitly accepted.
+Timezone modeling follows accepted ADR-011. Its status remains governed by the standalone ADR.
 
 Distinguish real instants from business-local schedules:
 

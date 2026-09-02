@@ -737,7 +737,7 @@ Rejected because future ADR-023 owns verified experience, review, rating, aggreg
 - **ADR-007 — Booking Concurrency (Accepted):** concrete EquipmentRental and Space capacity, holds, occupancy, and concurrency remain separate from equipment or Kitchen reference classification.
 - **ADR-009 — Outbox Table Schema (Accepted):** important asynchronous lifecycle propagation uses accepted transactional-outbox persistence where appropriate.
 - **ADR-010 — UUIDv7 Identifier Strategy (Proposed):** stable canonical and governance identities follow repository identifier direction and remain independent of mutable labels.
-- **ADR-011 — Timezone Modeling Strategy (Proposed):** governance timestamps are real instants; localization does not create timezone semantics.
+- **ADR-011 — Timezone Modeling Strategy (Accepted):** governance timestamps are real instants; localization does not create timezone semantics.
 - **ADR-014 — Promotion Engine (Proposed):** Promotion evaluation, eligibility, compatibility, snapshots, repricing, and refunds remain Promotion-engine concerns and are not recomputed from current taxonomy.
 - **ADR-016 — Event Versioning (Accepted):** future reference-data integration events require explicit compatible versioning.
 - **ADR-017 — Professional Identity, Credentials and Jurisdiction Eligibility (Proposed):** specialty classification remains distinct from professional identity, credential verification, licensure, and jurisdiction eligibility.

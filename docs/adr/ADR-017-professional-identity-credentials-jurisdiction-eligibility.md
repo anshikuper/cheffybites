@@ -536,7 +536,7 @@ This ADR does not finalize event names, payloads, schemas, consumers, or publica
 
 ### 24. Temporal and Identifier Architecture
 
-Proposed ADR-011 remains authoritative for real instants, civil dates/local schedules, IANA timezone identities, and historical instant handling. ADR-017 does not create a separate timezone rule.
+Accepted ADR-011 remains authoritative for real instants, civil dates/local schedules, IANA timezone identities, and historical instant handling. ADR-017 does not create a separate timezone rule.
 
 Credential issue or expiry values, engagement effective periods, eligibility effective periods, status changes, and verification times must use types matching their business semantics. A legal issue/expiry date may be a civil date where that is the governing meaning; a transition, verification occurrence, or resolved effective moment is a real instant. Real instants follow ADR-011. Current changes must not rewrite historical resolved instants.
 
@@ -697,7 +697,7 @@ Rejected because identity, credential ownership, Organization authorization, and
 - **ADR-006 — Promotion Targeting Model:** Promotion owner and target identity remain separate from professional Organization authorization.
 - **ADR-007 — Booking Concurrency Control:** KitchenBooking and EquipmentRental concurrency remain unchanged and are not generalized to professional Appointment scheduling.
 - **ADR-010 — UUIDv7 Identifier Strategy:** Existing identifier direction applies when later persistence is designed; this ADR does not change its Proposed status.
-- **ADR-011 — Timezone Modeling:** Existing temporal/timezone direction applies to effective periods and historical instants; this ADR does not change its Proposed status.
+- **ADR-011 — Timezone Modeling (Accepted):** Existing temporal/timezone direction applies to effective periods and historical instants; this ADR does not change that decision.
 - **ADR-012 — Payment Marketplace Settlement:** Payment/refund orchestration and performer/provider/beneficiary separation remain outside this ADR; this ADR does not change its Proposed status.
 - **ADR-013 — ChefOrderGroup Aggregate + Financial Boundary:** `ChefOrderGroup` continues to represent one actual Chef performer inside one concrete Order. ADR-017 supplies the durable professional and Organization-authorization semantics without changing ADR-013's Proposed status or aggregate boundary.
 - **ADR-014 — Promotion Engine:** Promotion evaluation, compatibility, benefit, and funding remain outside this ADR; this ADR does not change its Proposed status.

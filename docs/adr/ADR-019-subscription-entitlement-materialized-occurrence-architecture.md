@@ -329,7 +329,7 @@ For Kitchen Subscription, the concrete physical reservation remains the ordinary
 
 ### 16. Timezone and Materialized Instants
 
-ADR-011 remains the temporal decision consumed by this Proposed ADR; ADR-011's status is unchanged.
+Accepted ADR-011 remains the temporal decision consumed by this Proposed ADR.
 
 Recurring subscription rules that express local civil time must retain an explicit authoritative IANA timezone context. Server, JVM, browser, device, and numeric-offset defaults are not recurrence authority.
 
@@ -1386,7 +1386,7 @@ Rejected because external Payment, notification, delivery, and other providers c
 - **ADR-007 — Booking Concurrency Control (Accepted):** Concrete subscription-funded KitchenBooking, Space, cleaning, Equipment, entitlement coordination, and replacement concurrency remain ADR-007 concerns.
 - **ADR-009 — Outbox Table Schema (Accepted):** Approved subscription events use the transactional outbox and commit with local domain state.
 - **ADR-010 — UUIDv7 Identifier Strategy (Proposed):** Future subscription persistence follows the repository identifier direction without using UUID ordering as chronology.
-- **ADR-011 — Timezone Modeling (Proposed):** Local recurrence, explicit IANA context, real materialized instants, DST handling, and historical instant semantics follow ADR-011.
+- **ADR-011 — Timezone Modeling (Accepted):** Local recurrence, explicit IANA context, real materialized instants, DST handling, and historical instant semantics follow ADR-011.
 - **ADR-012 — Payment Marketplace Settlement (Proposed):** Payment, PaymentAttempt, provider interaction, idempotency, Refund orchestration, and approved settlement execution remain ADR-012 concerns.
 - **ADR-013 — ChefOrderGroup Aggregate + Financial Boundary (Proposed):** Actual Chef performer and ChefOrderGroup remain tied to concrete Food Orders; subscription and occurrence do not own ChefOrderGroup.
 - **ADR-014 — Promotion Engine (Proposed):** Promotion evaluation, application, compatibility, redemption, restoration, provider-failure handling, and Platform subsidy semantics remain ADR-014 concerns.

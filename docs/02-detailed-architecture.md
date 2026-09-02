@@ -130,6 +130,12 @@ flowchart TB
 
 # 5. C4 Level 2 — Container Architecture
 
+The diagram below is the long-term multi-experience container direction. For
+Phase 1, accepted ADR-025 deploys only `apps/customer-web`, hosting the public
+LP-01 surface plus protected `/app/operator/*` and `/app/chef/*` routes.
+`business-web` and `chef-web` remain reserved; no backend domain or
+authorization boundary is merged by this pilot deployment choice.
+
 ```mermaid
 flowchart TB
     subgraph Clients[Client Applications]
@@ -264,13 +270,13 @@ flowchart TB
     Order --> Delivery
     Payment --> Payout
     Payment --> Refund
-    Booking --> Pricing
-    Booking --> Payment
+    Booking --> Notification
+    Booking -. future paid workflow .-> Pricing
+    Booking -. future paid workflow .-> Payment
     Food --> Catalog
     Demand --> Catalog
     Demand --> Notification
     Order --> Notification
-    Booking --> Notification
     Chat --> Notification
 
     Identity --> DB
@@ -361,8 +367,12 @@ Owns:
 - Kitchens.
 - Kitchen spaces.
 - Kitchen operating schedules.
+- Space availability and blocked rules.
+- RentalOffers as the sole source of current Space rental terms.
 - Kitchen rules.
 - Kitchen publication status.
+- Platform pilot authorization evidence (admin-controlled, separate from
+  operator publication).
 
 Does not own:
 
@@ -377,7 +387,7 @@ Does not own:
 Owns:
 
 - Equipment master catalog.
-- Space equipment assignment.
+- Space equipment assignment and Phase-1 offering mode.
 - Rental equipment inventory.
 - Equipment availability.
 - Equipment rental line items.
@@ -393,6 +403,8 @@ Critical invariant:
 Owns:
 
 - Kitchen space bookings.
+- Non-reserving Phase-1 request lifecycle.
+- Immutable request/offer snapshots and status history.
 - Temporary holds.
 - Booking status.
 - Booking occupancy interval.
@@ -402,11 +414,12 @@ Collaborates with:
 
 - Kitchen.
 - Equipment.
-- Pricing.
-- Promotion.
-- Tax.
-- Payment.
-- Payout.
+- Identity/Organization authorization.
+- Notification through committed integration events.
+
+Pricing, Promotion, Tax, Payment, and Payout collaboration belongs to the
+future paid Kitchen-booking workflow. The Phase-1 request flow has no financial
+dependency.
 
 ---
 
@@ -418,6 +431,7 @@ Owns:
 - Chef business.
 - Chef membership.
 - Chef service area.
+- Controlled pilot business-category selections.
 
 ---
 
@@ -812,13 +826,13 @@ erDiagram
     LOCATIONS ||--o{ KITCHENS : contains
     KITCHENS ||--o{ KITCHEN_SPACES : contains
 
-    KITCHEN_SPACES ||--o{ SPACE_EQUIPMENT : includes
+    KITCHEN_SPACES ||--o{ RENTAL_OFFERS : offers
+    KITCHEN_SPACES ||--o{ SPACE_AVAILABILITY_RULES : schedules
+    KITCHEN_SPACES ||--o{ SPACE_EQUIPMENT : describes
     EQUIPMENT_CATALOG_ITEMS ||--o{ SPACE_EQUIPMENT : referenced_by
     KITCHEN_SPACES ||--o{ EQUIPMENT_RENTALS : offers
     EQUIPMENT_CATALOG_ITEMS ||--o{ EQUIPMENT_RENTALS : rented_as
 
-    KITCHENS ||--o{ KITCHEN_AVAILABILITIES : defines
-    KITCHEN_SPACES ||--o{ KITCHEN_SPACE_AVAILABILITIES : defines
     KITCHEN_SPACES ||--o{ KITCHEN_BOOKINGS : reserved
     CHEF_PROFILES ||--o{ KITCHEN_BOOKINGS : creates
 
@@ -963,12 +977,33 @@ erDiagram
         numeric size_value
         string size_unit
         int capacity
-        bigint hourly_rate_minor
-        string currency_code
-        int minimum_booking_minutes
         int maximum_booking_minutes
         int cleaning_minutes
         string status
+        int version
+    }
+
+    RENTAL_OFFERS {
+        uuid id PK
+        uuid kitchen_space_id FK
+        string rate_basis
+        bigint amount_minor NULL
+        string currency_code NULL
+        bool active
+        int version
+    }
+
+    SPACE_AVAILABILITY_RULES {
+        uuid id PK
+        uuid kitchen_space_id FK
+        string availability_kind
+        string schedule_kind
+        date local_date NULL
+        time local_start_time
+        time local_end_time
+        date effective_start_date NULL
+        date effective_end_date NULL
+        bool active
         int version
     }
 
@@ -985,9 +1020,8 @@ erDiagram
         uuid id PK
         uuid kitchen_space_id FK
         uuid equipment_catalog_item_id FK
-        int quantity
-        bool included
-        bool rental_available
+        int display_quantity NULL
+        string availability_mode
     }
 
     EQUIPMENT_RENTALS {
@@ -1005,11 +1039,12 @@ erDiagram
         uuid kitchen_space_id FK
         uuid chef_profile_id FK
         timestamptz start_at
+        uuid rental_offer_id FK
         timestamptz cooking_end_at
         timestamptz occupancy_end_at
         timestamptz hold_expires_at
         string status
-        string cancellation_reason
+        string terminal_reason_code
         int version
     }
 
@@ -1596,12 +1631,24 @@ Kitchen space booking is temporal. A simple `available=true` field is insufficie
 
 The authoritative availability query must consider:
 
+- Immutable DEMO/REAL scope and current pilot stage.
+- Operator publication and independent platform pilot authorization.
 - Operating hours.
-- Blackout periods.
+- An active one-time or weekly `AVAILABLE` Space rule.
+- One-time or weekly `BLOCKED` Space rules as a veto.
 - Existing confirmed bookings.
 - Temporary holds.
 - Cleaning buffer.
+- Active RentalOffer duration/commitment and declared requirements.
 - Requested interval.
+
+Operating hours constrain but do not create availability. Search is advisory;
+request submission rechecks all gates. `REQUESTED` is non-reserving. Phase-1
+operator confirmation rechecks them again in one local transaction, then
+attempts `REQUESTED -> CONFIRMED` under ADR-007. If competing confirmations
+overlap, the exclusion constraint allows at most one commit; the loser receives
+`BOOKING_CONFLICT` and remains `REQUESTED`. `HELD` is retained for a future
+paid workflow and is not used by the pilot.
 
 For PostgreSQL, prefer a range-based model for confirmed occupancy. A strong implementation option is:
 
@@ -1615,7 +1662,7 @@ WHERE (status IN ('HELD', 'CONFIRMED'));
 
 The final DDL should use a generated/maintained `tstzrange` column or equivalent transaction-safe range representation.
 
-Equipment with quantity greater than one uses the per-Kitchen-Space EquipmentRental as the authoritative finite inventory resource. EquipmentCatalogItem is a reusable type definition, and SpaceEquipment primarily represents baseline/included assignment; neither is the additional-rental capacity or lock target. A future Kitchen-wide resource shared across Spaces requires a separate approved business and architecture model.
+Equipment with quantity greater than one uses the per-Kitchen-Space EquipmentRental as the authoritative finite inventory resource. EquipmentCatalogItem is a reusable type definition, and ADR-024 extends SpaceEquipment's descriptive assignment with the Phase-1 modes `INCLUDED`, `SHARED`, `EXTRA_DISCUSS`, and `UNAVAILABLE`; SpaceEquipment is not the additional-rental capacity or lock target. A future Kitchen-wide resource shared across Spaces requires a separate approved business and architecture model.
 
 For reservations requesting equipment, collect the requested `equipment_rental_id` values, sort them deterministically, and lock every corresponding EquipmentRental row with PostgreSQL row-level locking equivalent to `SELECT ... FOR UPDATE`. Only after all locks are held may the transaction validate active/reservable status and Kitchen Space ownership, read `quantity_available`, and recalculate overlapping capacity-consuming EquipmentAllocations. A quote or pre-lock availability calculation is informational and cannot be reused as authoritative capacity.
 
@@ -2270,7 +2317,7 @@ Response:
 {
   "id": "uuid",
   "displayName": "Jane Doe",
-  "roles": ["CHEF_OWNER"],
+  "roles": ["CHEF"],
   "organizations": [
     {
       "id": "uuid",
@@ -2304,18 +2351,16 @@ Request:
 ## List/Search Kitchens
 
 ```http
-GET /api/v1/kitchens?lat=45.5&lng=-73.6&radiusMeters=10000&availableFrom=...&availableTo=...
+GET /api/v1/kitchens?area=toronto-east&availableFrom=...&availableTo=...
 ```
 
 Filters:
 
-- Latitude/longitude.
-- Radius.
+- Coarse discovery area (exact Location coordinates remain server-private).
 - Date/time.
-- Equipment.
-- Price range.
+- Safe Space-equipment modes/catalog filters.
+- RentalOffer basis and same-basis price range where monetary.
 - Capacity.
-- Amenities.
 
 ## Create Kitchen
 
@@ -2327,7 +2372,15 @@ POST /api/v1/kitchens
 {
   "locationId": "uuid",
   "name": "Hello Kitchen",
-  "description": "Commercial kitchen facility"
+  "description": "Commercial kitchen facility",
+  "facilityType": "SHARED_COMMERCIAL_KITCHEN",
+  "intendedUseStatement": "Operator-entered permitted-use summary",
+  "publicAccessibilitySummary": "Step-free main entrance",
+  "loadingParkingSummary": "Loading bay available by prior arrangement",
+  "storageSummary": "Dry and cold storage discussed per request",
+  "facilityConstraints": "No nut processing in the facility",
+  "visibilityLevel": "PILOT_AUTHENTICATED",
+  "timezoneId": "America/Toronto"
 }
 ```
 
@@ -2342,12 +2395,20 @@ POST /api/v1/kitchens/{kitchenId}/spaces
   "name": "Space 1",
   "description": "Baking and prep space",
   "capacity": 4,
-  "hourlyRateMinor": 2500,
-  "currency": "CAD",
-  "minimumBookingMinutes": 180,
-  "cleaningMinutes": 60
+  "size": { "value": 900, "unit": "SQUARE_FEET" },
+  "publicAccessSummary": "Ground-floor prep area",
+  "storageMode": "SHARED",
+  "storageNote": "Dry shelving discussed per request",
+  "operatingConstraints": "No nut processing in this Space",
+  "exclusivityMode": "EXCLUSIVE_SPACE",
+  "maximumBookingMinutes": 480,
+  "cleaningMinutes": 60,
+  "status": "ACTIVE"
 }
 ```
+
+Rental terms are created through `/kitchen-spaces/{spaceId}/rental-offers`;
+KitchenSpace has no competing price or minimum-duration fields.
 
 ## Publish Kitchen
 
@@ -2365,21 +2426,23 @@ POST /api/v1/kitchens/{kitchenId}/publication
 GET /api/v1/equipment/catalog?q=tandoor&category=cooking
 ```
 
-## Add Included Equipment
+## Add or Update Space Equipment Offering
 
 ```http
-POST /api/v1/kitchen-spaces/{spaceId}/equipment
+GET /api/v1/kitchen-spaces/{spaceId}/equipment
+PUT /api/v1/kitchen-spaces/{spaceId}/equipment/{equipmentCatalogItemId}
 ```
 
 ```json
 {
-  "equipmentCatalogItemId": "uuid",
-  "quantity": 1,
-  "included": true
+  "displayQuantity": 1,
+  "availabilityMode": "INCLUDED",
+  "conditionNote": "Commercial convection oven",
+  "operatorNote": null
 }
 ```
 
-## Add Rental Equipment
+## Future Paid Rental Equipment
 
 ```http
 POST /api/v1/kitchen-spaces/{spaceId}/rental-equipment
@@ -2398,78 +2461,31 @@ POST /api/v1/kitchen-spaces/{spaceId}/rental-equipment
 
 # 28. Kitchen Booking APIs
 
-## Search Availability
+The canonical contract is Section 28 of
+[`04-api-contracts.md`](04-api-contracts.md). Its Phase-1 architecture is:
 
-```http
-GET /api/v1/kitchen-spaces/{spaceId}/availability?from=...&to=...
+```text
+GET  /api/v1/kitchen-spaces/{spaceId}/availability
+POST /api/v1/kitchen-booking-requests
+GET  /api/v1/kitchen-booking-requests/{bookingId}
+GET  /api/v1/me/kitchen-booking-requests
+GET  /api/v1/operator/kitchen-booking-requests
+POST /api/v1/kitchen-booking-requests/{bookingId}/confirm
+POST /api/v1/kitchen-booking-requests/{bookingId}/decline
+POST /api/v1/kitchen-booking-requests/{bookingId}/withdraw
+POST /api/v1/kitchen-bookings/{bookingId}/cancel
 ```
 
-## Quote Booking
+Submission creates a non-reserving `REQUESTED` KitchenBooking with immutable
+offer/request snapshots and normalized requirements. Confirmation is the first
+capacity-reserving transition. `REQUESTED -> CONFIRMED|DECLINED|WITHDRAWN` and
+`CONFIRMED -> CANCELLED` are the Phase-1 transitions. Mutations are idempotent,
+authorized, scope-isolated, and optimistic-version checked.
 
-```http
-POST /api/v1/kitchen-bookings/quote
-```
-
-```json
-{
-  "spaceId": "uuid",
-  "startAt": "2026-09-01T10:00:00Z",
-  "endAt": "2026-09-01T14:00:00Z",
-  "equipment": [
-    {
-      "equipmentRentalId": "uuid",
-      "quantity": 1
-    }
-  ],
-  "promoCode": "WELCOME10"
-}
-```
-
-## Create Booking
-
-```http
-POST /api/v1/kitchen-bookings
-Idempotency-Key: booking-unique-key
-```
-
-Request:
-
-```json
-{
-  "spaceId": "uuid",
-  "startAt": "2026-09-01T10:00:00Z",
-  "endAt": "2026-09-01T14:00:00Z",
-  "equipment": [
-    {
-      "equipmentRentalId": "uuid",
-      "quantity": 1
-    }
-  ],
-  "promoCode": "WELCOME10"
-}
-```
-
-Response:
-
-```json
-{
-  "bookingId": "uuid",
-  "status": "PAYMENT_PENDING",
-  "pricing": {
-    "subtotalMinor": 10000,
-    "discountMinor": 1000,
-    "feeMinor": 500,
-    "taxMinor": 1400,
-    "totalMinor": 10900,
-    "currency": "CAD"
-  },
-  "payment": {
-    "paymentId": "uuid",
-    "provider": "STRIPE",
-    "initiationToken": "provider-generated opaque client token"
-  }
-}
-```
+There is no Phase-1 quote/checkout/payment endpoint, Payment aggregate,
+provider token, promotion, tax, payout, or ledger side effect. A future paid
+Kitchen-booking checkout must be a distinct approved contract and may use the
+long-term `HELD` state; it cannot silently change these request semantics.
 
 ---
 
@@ -2977,7 +2993,10 @@ Core events:
 
 ```text
 KitchenPublished.v1
+KitchenBookingRequested.v1
 KitchenBookingConfirmed.v1
+KitchenBookingDeclined.v1
+KitchenBookingWithdrawn.v1
 KitchenBookingCancelled.v1
 FoodPublished.v1
 FoodAvailabilityChanged.v1
@@ -3392,21 +3411,20 @@ The standalone files under `docs/adr/` are the canonical ADR registry. ADR statu
 - ADR-006 — Promotion Targeting Model
 - ADR-007 — Booking Concurrency Control
 - ADR-009 — Outbox Table Schema
+- ADR-011 — Timezone Modeling Strategy
 - ADR-016 — Event Versioning
+- ADR-024 — Phase-1 Kitchen Marketplace Request, Offer, and Availability Model
+- ADR-025 — Phase-1 Unified Pilot Web Topology
 
 ## Proposed ADRs
 
 - ADR-005 — Order Fulfillment Type Separation
 - ADR-010 — UUIDv7 Identifier Strategy
-- ADR-011 — Timezone Modeling Strategy
 - ADR-012 — Payment / Marketplace Settlement
 - ADR-013 — ChefOrderGroup Aggregate + Financial Boundary
 - ADR-014 — Promotion Engine
 - ADR-015 — Financial Ledger / Reconciliation
 - ADR-017 — Professional Identity, Credentials and Jurisdiction Eligibility
-
-## Required Future Decisions Not Yet Created
-
 - ADR-018 — Dietitian Engagement, Appointment Scheduling and Online Meeting Provisioning
 - ADR-019 — Subscription, Entitlement and Materialized Occurrence Architecture
 - ADR-020 — Commercial Obligations, Earning Recognition and Payable-Source Financial Model
@@ -3414,7 +3432,13 @@ The standalone files under `docs/adr/` are the canonical ADR registry. ADR statu
 - ADR-022 — Platform-Governed Taxonomy and Reference-Data Lifecycle
 - ADR-023 — Verified-Experience Reviews and Reputation
 
-ADR-018 through ADR-023 are planning references, not standalone ADRs and not Accepted decisions. Their sequence is intentional: ADR-019 precedes ADR-020 because the commercial-obligation and earning-recognition decision depends on subscription billing-cycle, entitlement-cycle, materialized-occurrence, unused-entitlement, and provider-non-performance semantics established by ADR-019. Implementation must not infer unresolved schema, APIs, events, cardinalities, or business policy from this roadmap.
+ADR-018 through ADR-023 now exist as standalone Proposed ADRs; they are not
+Accepted decisions. Their sequence remains intentional: ADR-019 precedes
+ADR-020 because the commercial-obligation and earning-recognition decision
+depends on subscription billing-cycle, entitlement-cycle,
+materialized-occurrence, unused-entitlement, and provider-non-performance
+semantics established by ADR-019. Implementation must not infer unresolved
+schema, APIs, events, cardinalities, or business policy from Proposed status.
 
 ---
 
@@ -3863,6 +3887,290 @@ Use the following scope-specific ownership rules; this list is not a global prec
 6. [`02-detailed-architecture.md`](02-detailed-architecture.md) governs integrated architecture explanation, domain/component interaction, cross-domain coordination, implementation direction, and architectural overview. It summarizes specialized representations and must remain consistent with their canonical documents.
 
 Proposed ADRs remain Proposed until explicitly accepted and must not silently override the current approved baseline or an Accepted ADR. If canonical documents appear to conflict, do not choose one based on an assumed hierarchy and do not invent a reconciliation. Stop implementation of the conflicting area, identify the conflict and impact, reconcile the owning canonical documents or ADR explicitly, and keep linked summaries consistent. Where an Accepted ADR establishes an architecture decision, each specialized document must conform within its own representation scope. Source code and generated OpenAPI/AsyncAPI artifacts must conform to the applicable canonical documents rather than creating another source of truth.
+
+---
+
+# 64. Phase-1 Chef-to-Kitchen Pilot Architecture
+
+This section is the integrated architecture for
+`P1-MVP-01-chef-kitchen-pilot-marketplace-spec.md`. For this bounded pilot it
+supersedes earlier explanatory paid-Kitchen-booking examples in this package.
+The exact persistence, HTTP, and event representations remain owned by
+`03-database-erd.md`, `04-api-contracts.md`, and `05-event-contracts.md`.
+
+## 64.1 Deployment and Trust Boundaries
+
+ADR-025 selects one Phase-1 Next.js deployment in `apps/customer-web`:
+
+```text
+Public LP-01 routes
+        |
+        +-- /app/operator/*  authenticated operator workspace
+        +-- /app/chef/*      authenticated Chef workspace
+```
+
+Public caching/SEO applies only to public-safe routes. Protected responses are
+user-, role-, organization-, and data-scope aware and are never stored in a
+shared public cache. The API validates Auth0 tokens and then resolves the
+Cheffy Bites User, ParticipantProfile, memberships, role permissions, data
+scope, and resource ownership. Auth0 does not own Kitchen/Chef profiles or
+business authorization. Backend module boundaries remain independent of the
+number of web deployments. Long-term `business-web` and `chef-web` directories
+remain reserved for extraction after pilot evidence.
+
+The route shell preserves the equivalent route/state when switching between
+`en-CA` and `fr-CA`. System navigation, validation, status/reason labels,
+errors, accessibility names, and notification templates are externalized and
+localized; dates/currency are formatted for locale without changing stored
+instants or amounts. Participant-authored text is preserved in its entered
+language and is not fabricated.
+
+## 64.2 Profile and Operator Model
+
+```text
+Auth0 subject -> User -> ParticipantProfile
+                    |
+                    +-> OrganizationMembership -> Organization
+                                                    -> Location
+                                                    -> Kitchen
+                                                    -> Space
+                    +-> ChefProfile -> business categories
+```
+
+Operator capabilities derive from active Organization membership, role,
+permission, and Kitchen ownership/assignment. There is no synthetic
+one-operator-per-Kitchen profile. ChefProfile is distinct from authentication
+and may reference a Chef Business without making that business the actual
+human identity. An operator publication affirmation records the operator's
+declaration of authority; neither it nor platform pilot authorization proves
+property ownership or a sublicense/re-rental right. Phase 1 stores no permit,
+insurance, certificate, credential document, or other professional-evidence
+workflow.
+
+The bounded pilot role codes are `OPERATOR_OWNER`, `OPERATOR_MANAGER`, `CHEF`,
+and `ADMIN`. Operator roles are Organization-membership scoped, Chef/Admin are
+platform grants, and manager Kitchen assignment is explicit. Each maps to
+granular permissions and remains subordinate to membership, resource
+ownership, data scope, and current-state checks. One User may hold multiple
+roles. ChefProfile's optional business display/trading label is presentation
+data, not a duplicate authoritative Organization or ChefBusiness legal name.
+
+The narrow Chef business-category catalog is controlled reference data. This
+does not accept or depend on Proposed ADR-022's broader taxonomy architecture.
+The Phase-1 profile boundary follows ADR-017's useful separation of identity
+from professional data without accepting the full Proposed professional-profile
+and credential decision.
+
+Kitchen/Space listing management uses the existing object-storage media
+architecture with explicit MediaAsset metadata and typed Kitchen/Space
+associations. Only validated ready images may be shown; associations own
+ordering, visibility, and participant-authored localized alt/caption fields.
+Kitchen presentation includes bounded loading/parking, storage, and facility-
+constraint summaries; operating-hours summary is derived from typed rules and
+private access/orientation instructions remain on Location. Space size/unit and
+maximum use duration are optional physical fields, not pricing authority.
+Operator requirements are typed Kitchen children. Request declarations use
+submitted `NOT_PROVIDED` or `DECLARED` plus append-only review evidence that
+may derive `REVIEWED_OUTSIDE_PLATFORM`; none asserts Cheffy verification and
+no evidence document is stored. Submitted rows snapshot the requirement
+version/code/title/prompt, and equipment needs snapshot the displayed catalog
+name/offering mode, so live edits cannot rewrite request evidence.
+
+## 64.3 Kitchen Publication and Pilot Authorization
+
+Requestability is a server-computed conjunction, not one status:
+
+```text
+permitted data scope
+AND permitted pilot stage
+AND Kitchen PUBLISHED by operator
+AND active platform pilot authorization
+AND active KitchenSpace
+AND active RentalOffer
+AND valid future Space availability
+```
+
+The platform stage is versioned `PRE_PILOT` or `CONTROLLED_PILOT`. Operator
+publication is independently `DRAFT`, `PUBLISHED`, or `UNPUBLISHED`. Platform
+pilot authorization is a separately audited grant/revocation. Thus an operator
+can publish content without the platform making it pilot-requestable. An admin
+can emergency-unpublish only through a permissioned, reason-required audit
+path; the audit identifies the admin actor rather than impersonating an
+operator.
+
+Discovery, new-request submission, and confirmation apply the current
+requestability conjunction. Authorized request/booking detail, inbox,
+notification, feedback, and admin history remain accessible under immutable
+scope, ownership, and resource-authorization rules after an unpublish or pilot-
+authorization revocation; those control changes do not erase existing facts.
+Public pages never infer requestability from `KitchenPublished.v1` alone.
+
+## 64.4 DEMO / REAL Isolation
+
+Every pilot root record belongs to an immutable data scope classified `DEMO`
+or `REAL`. Descendant relationships cannot cross scopes. Local/staging demo
+identity and databases are isolated from production. Production may host an
+explicit demo scope only when every query selects it deliberately; it never
+appears in REAL discovery or analytics.
+
+A reset command accepts one resolved scope ID, verifies `DEMO` and
+`resettable`, records the actor/reason, and performs a deterministic scoped
+reset. It cannot accept a wildcard/environment root and has no REAL path.
+DEMO-to-REAL conversion is prohibited; real onboarding creates new records.
+Every DEMO page, card, dashboard, notification, email, and generated screenshot
+uses a persistent accessible “Demonstration — fictional data” treatment.
+The versioned demo fixture manifest contains invented participants, facilities,
+addresses, media, and terms only; researched real companies are never copied
+into participant records.
+
+## 64.5 RentalOffer and Availability Coordination
+
+RentalOffer is owned by the Kitchen domain and belongs to one Space. It is the
+only live source of rental basis, current amount/currency where applicable,
+block or included units, minimum duration/commitment, and informational
+deposit/charge notes. KitchenSpace owns physical properties and cleaning time,
+not a duplicate price. Request snapshots preserve the selected offer/version
+and estimate evidence.
+
+Estimate duration is the concrete cooking/use interval, excluding the cleaning
+extension that exists for capacity protection. No informational charge note
+changes the formula. A Kitchen-local calendar day is a civil date, not a fixed
+24-hour duration through a daylight-saving transition.
+
+Space availability is an explicit rule set with `AVAILABLE|BLOCKED` and
+`ONE_TIME|WEEKLY` dimensions. Weekly rules carry weekdays and effective dates.
+Kitchen operating hours are an outer constraint. Evaluation order is:
+
+1. data scope, stage, publication, pilot authorization, and lifecycle gates;
+2. Kitchen operating hours;
+3. matching active AVAILABLE rule;
+4. matching active BLOCKED rule veto;
+5. HELD/CONFIRMED occupancy veto;
+6. RentalOffer duration/commitment and declared-requirement validation.
+
+A hard offer-duration or commitment failure is no match. Equipment,
+shared-resource, and other operator-specific conditions that need human review
+produce `POSSIBLE_OPERATOR_CONFIRMATION_REQUIRED`, not a false deterministic
+match.
+
+Rules use Kitchen-local business time under accepted ADR-011. Concrete request
+boundaries are instants. Gaps are rejected and unresolved overlaps are
+rejected; no JVM/library default may shift or choose. Later rule/timezone
+changes do not rewrite already submitted or confirmed concrete instants. An
+active BLOCKED rule conflicting with future protected occupancy is rejected
+until the booking is explicitly cancelled; pending requests remain requested
+and surface their re-evaluated incompatibility.
+
+## 64.6 Request and Confirmation Sequence
+
+```mermaid
+sequenceDiagram
+    participant C as Chef
+    participant API as Booking Application Service
+    participant K as Kitchen/Offer/Availability
+    participant DB as PostgreSQL
+    participant O as Transactional Outbox
+    participant N as Notification Consumer
+
+    C->>API: Submit request + Idempotency-Key
+    API->>K: Authorize and evaluate current requestability
+    API->>DB: Insert REQUESTED booking, snapshots, requirements, history
+    API->>O: Insert KitchenBookingRequested.v1
+    DB-->>API: Commit (no capacity reserved)
+    O-->>N: Publish after commit
+    N->>N: Persist in-app notification; retry email independently
+
+    Note over API,DB: Later operator decision
+    API->>DB: Lock/reload REQUESTED row
+    API->>K: Reauthorize and revalidate current rules
+    API->>DB: Attempt REQUESTED -> CONFIRMED with cleaning occupancy
+    API->>O: Insert KitchenBookingConfirmed.v1
+    DB-->>API: Commit or GiST conflict
+```
+
+`KitchenBooking` owns the request and booking lifecycle. There is no separate
+BookingRequest aggregate. The pilot transitions are
+`REQUESTED -> CONFIRMED|DECLINED|WITHDRAWN` and
+`CONFIRMED -> CANCELLED`. Only `CONFIRMED` reserves in the pilot. `HELD` remains
+the accepted long-term ADR-007 state but is not used here.
+
+Competing acceptances rely on the ADR-007 partial GiST exclusion over
+`HELD|CONFIRMED`. At most one commits. An exclusion failure rolls back the
+losing transition/history/outbox record, maps to HTTP 409 `BOOKING_CONFLICT`,
+and leaves that request `REQUESTED`. Withdrawal and decision races are
+first-valid-transition-wins through row locking/optimistic versioning.
+
+The submitted Space, Chef, offer, use/occupancy boundaries, and the explicit
+request/offer snapshots are immutable in Phase 1. Booking-domain command
+receipts provide idempotency for submission and transitions using actor, scope,
+operation, key-hash, and request-hash semantics; they are separate from
+Financial idempotency records. A successful receipt, history row, domain state,
+and outbox event commit atomically.
+
+## 64.7 Payment Boundary
+
+Phase 1 has no pricing checkout, promotions, tax, payment, provider token,
+refund, payout, or ledger state for Kitchen requests. RentalOffer estimates
+and deposit/charge notes are informational. Notification/provider failure does
+not affect booking state.
+
+The long-term financial modules and Proposed ADR-012/ADR-015 remain intact for
+future billable commerce but are not pilot dependencies. A paid Kitchen-booking
+flow must receive the required accepted business/financial decisions and a
+distinct checkout API. It may use `HELD`; it must not redefine request
+submission or make Payment prerequisite to the KitchenBooking aggregate.
+
+## 64.8 Equipment, Address, Feedback, and Notification Boundaries
+
+Phase-1 equipment offering modes are `INCLUDED`, `SHARED`, `EXTRA_DISCUSS`, and
+`UNAVAILABLE`. They describe discussion needs. They do not create inventory
+allocation or financial obligations. The ADR-007 EquipmentRental capacity
+model is retained for later paid use.
+
+Location holds the exact address/point and access instructions. Discovery uses
+only a coarse public area and optional safe distance band. Exact details are
+retrieved only for authorized parties to a confirmed booking under the
+disclosure policy and are excluded from events, logs, analytics, SEO, and
+sitemaps.
+
+Feedback is bounded, typed, private triage data. It is not Review or Chat, and
+its free text is excluded from integration events and analytics. Booking
+transition events drive durable, idempotent in-app notifications and retryable
+email delivery. Provider failure cannot roll back a committed transition.
+Notification payloads use safe templates and current detail views reload the
+authoritative aggregate. SMS is outside the pilot. Push remains a later native
+P1 channel driven from the same events; exact device-registration and delivery
+contracts belong to that slice rather than the web-first P0 contract.
+
+## 64.9 Accepted Decisions and Deferred Gates
+
+The pilot depends on Accepted ADR-001, ADR-002, ADR-003, ADR-007, ADR-009,
+ADR-011, ADR-016, ADR-024, and ADR-025. ADR-011 was accepted because its
+instant/local-time/IANA-zone/DST/history model is complete and consistent with
+the pilot. ADR-007 is unchanged.
+
+Proposed ADR-010, ADR-012–ADR-015, and ADR-017–ADR-023 retain their current
+statuses and are not silently implemented. In particular, unresolved
+Merchant-of-Record, tax, Stripe Connect, refund, payout, ledger, credential,
+and broad taxonomy decisions are later-release gates, not Phase-1
+implementation blockers because the pilot performs no collection or
+settlement and stores no credential evidence.
+
+The canonical implementation handoff is
+`docs/product/P1-ARCH-01-phase1-pilot-architecture-reconciliation.md`.
+
+## 64.10 Required Architecture-Level Test Matrix
+
+Implementation planning must allocate automated coverage for: multiple
+overlapping `REQUESTED` rows; concurrent accept with exactly one confirmed
+winner and a still-requested loser; cleaning overlap and half-open back-to-back
+bookings; one-time/weekly available rules and blocked vetoes; DST gap/overlap
+rejection and timezone-change history; every RentalOffer basis including
+inquiry-only; bidirectional DEMO/REAL query isolation; unpublished or
+unauthorized REAL Kitchen denial; immutable offer/listing snapshots after live
+edits; withdrawal/accept races; capacity release on cancel; and cross-
+Organization authorization denial. These are contract tests against the
+canonical ERD/API/event behavior, not optional UI-only checks.
 
 ---
 
