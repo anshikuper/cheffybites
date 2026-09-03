@@ -60,7 +60,7 @@ Chef promotions are evaluated independently within the relevant Chef Order Group
 | CI/CD | GitHub Actions | Adopt |
 | Observability | OpenTelemetry + CloudWatch + structured JSON logs | Adopt |
 | Optional dashboards | Grafana | Adopt where operationally useful |
-| Backend tests | JUnit 5 + Testcontainers | Adopt |
+| Backend tests | JUnit 6 + Testcontainers | Adopt per ADR-026 |
 | JS package manager | pnpm | Adopt |
 | Monorepo orchestration | Turborepo | Adopt |
 
@@ -3415,6 +3415,7 @@ The standalone files under `docs/adr/` are the canonical ADR registry. ADR statu
 - ADR-016 — Event Versioning
 - ADR-024 — Phase-1 Kitchen Marketplace Request, Offer, and Availability Model
 - ADR-025 — Phase-1 Unified Pilot Web Topology
+- ADR-026 — Spring Boot 4 Test Baseline with JUnit 6
 
 ## Proposed ADRs
 

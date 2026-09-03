@@ -2631,10 +2631,12 @@ React Native's New Architecture is the current direction and is enabled by defau
 - Spring Web
 - OpenAPI/Swagger
 - Testcontainers
-- JUnit 5
+- JUnit 6
 - Mockito where appropriate
 
-Current official Spring documentation lists Spring Boot 4.1.x as a stable line; use the latest supported patch release at project bootstrap rather than hard-coding an outdated patch here. citeturn472196search10turn472196search12
+The Phase-1 backend compatibility baseline is Spring Boot 4.1.1 with
+JUnit 6.0.3 per ADR-026. Any later Spring Boot or JUnit upgrade must
+rerun the compatibility checks defined by ADR-026 before adoption.
 
 ## Primary Database
 
@@ -4720,7 +4722,7 @@ OBSERVABILITY
 OpenTelemetry + structured logs + CloudWatch/Grafana as appropriate
 
 TESTING
-JUnit 5 + Testcontainers + frontend/mobile unit/E2E tooling
+JUnit 6 + Testcontainers + frontend/mobile unit/E2E tooling
 ```
 
 ---

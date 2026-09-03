@@ -70,7 +70,7 @@ Unless an approved ADR changes it, use the following stack.
 - Bean Validation
 - REST APIs
 - OpenAPI
-- JUnit 5
+- JUnit 6
 - Testcontainers
 
 ## Web
