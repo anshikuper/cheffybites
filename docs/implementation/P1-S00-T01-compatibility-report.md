@@ -3,7 +3,7 @@
 ## Status
 **Pre-scaffolding gate: passed on 2026-09-04.**
 
-**Final checkpoint verdict: PASSED on 2026-09-04.**
+**Final checkpoint verdict: PASSED on 2026-09-05.**
 
 This report records the version-discovery gate required by the approved
 [`P1-S00-T01 bounded implementation plan`](../../plans/P1-S00-T01-bounded-implementation-plan.md:126).
@@ -452,3 +452,41 @@ pnpm --filter @cheffybites/customer-web exec playwright install --with-deps chro
 ### Current reconciliation status
 
 **CORRECTION PENDING REMOTE RE-RUN**
+
+## GitHub Actions PR run — 33981303962
+
+Run **33981303962** completed successfully on branch
+`feature/p1-foundation-ci-reconcile` and is the acceptance evidence for the
+P1-S00-T01 checkpoint.
+
+### Job results
+
+- Backend — PASS
+- Web — PASS
+- Containers — PASS
+- Contract — PASS
+- Security — PASS
+- Diff Check — PASS
+
+### Backend
+
+PostgreSQL/PostGIS startup and readiness passed. Backend tests passed, and
+dependency-lock verification passed.
+
+### Web
+
+The complete clean-run pipeline passed:
+
+- Install dependencies
+- Lint
+- Type-check
+- Tests
+- Build
+- Install Playwright Chromium
+- E2E
+
+### Final checkpoint status
+
+**Final T01 checkpoint: PASSED**
+
+Successful remote CI run **33981303962** is the acceptance evidence.
