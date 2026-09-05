@@ -1,0 +1,15 @@
+:root {
+  --cb-color-background: #fffdf8;
+  --cb-color-surface: #ffffff;
+  --cb-color-text: #1f2933;
+  --cb-color-muted: #52606d;
+  --cb-color-accent: #9f3a20;
+  --cb-color-focus: #005fcc;
+  --cb-radius: 0.75rem;
+  --cb-content-width: 72rem;
+}
+
+*:focus-visible {
+  outline: 0.2rem solid var(--cb-color-focus);
+  outline-offset: 0.2rem;
+}

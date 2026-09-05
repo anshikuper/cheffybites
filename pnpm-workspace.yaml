@@ -1,0 +1,16 @@
+packages:
+  - "apps/customer-web"
+  - "packages/api-client"
+  - "packages/design-tokens"
+
+allowBuilds:
+  unrs-resolver: false
+
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - "@playwright/test@1.62.1"
+  - "@redocly/cli@2.51.1"
+  - "@vitest/coverage-v8@5.0.0"
+  - "@vitest/mocker@5.0.0"
+  - "@vitest/spy@5.0.0"
+  - "vitest@5.0.0"

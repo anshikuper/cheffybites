@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: cheffy-bites
+  datasource:
+    url: ${CHEFFY_DB_URL:jdbc:postgresql://localhost:5432/cheffybites}
+    username: ${CHEFFY_DB_USERNAME:cheffybites}
+    password: ${CHEFFY_DB_PASSWORD:local-development-only}
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+management.otlp.tracing.export.enabled: ${CHEFFY_OTEL_EXPORT_ENABLED:false}
+
+cheffy:
+  foundation:
+    allowed-origins: ${CHEFFY_ALLOWED_ORIGINS:http://localhost:3000}
+    telemetry-export-enabled: ${CHEFFY_OTEL_EXPORT_ENABLED:false}
