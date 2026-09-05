@@ -292,6 +292,35 @@ passed (7 files). This is not OpenAPI generator nondeterminism.
 - T01 temporary request-level fail-closed boundary uses Next.js proxy
   before S01 Auth0 implementation
 
+## First GitHub Actions PR run (2026-09-05)
+
+### Run identifier
+GitHub Actions PR run **33969469597** on branch `feature/p1-foundation` at commit `9e63444`.
+
+### Diff Check
+**PASS** — `git diff --check` passed.
+
+### Initial CI wiring failures (5 jobs)
+
+| Job | Failure | Root cause |
+|---|---|---|
+| Backend | `gradle/actions/setup-gradle@417ae3ccd767c254f566b4a1e5b39f4e13a7a0e0` could not be resolved | Invalid immutable SHA for v4.3.1 |
+| Web | `actions/setup-node` with `cache: pnpm` executed before `pnpm/action-setup` installed pnpm | `Unable to locate executable file: pnpm` |
+| Contract | Same pnpm cache-before-install ordering | `Unable to locate executable file: pnpm` |
+| Security | Same pnpm cache-before-install ordering; additionally `google/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67` (repository root) is not a runnable action | `Top level 'runs:' section is required` |
+| Containers | `sendmail: command not found` on Ubuntu runner | Ubuntu runner lacks `sendmail` binary |
+
+### Corrected action evidence (CORRECTION PENDING REMOTE RE-RUN)
+
+| Tool/action | Human-readable release | Corrected immutable pin | Status |
+|---|---:|---|---|
+| `gradle/actions/setup-gradle` | `v4.3.1` | `06832c7b30a0129d7fb559bcc6e43d26f6374244` | Corrected in `.github/workflows/ci.yml` |
+| `pnpm/action-setup` | `v4.1.0` | `7088e561eb65bb68695d245aa206f005ef30921d` | Reordered before `actions/setup-node` in Web, Contract, Security |
+| `google/osv-scanner-action/osv-scanner-action` | `v2.5.1` | `6e4298ebc4db23e847df9b2e2de2939d6f066c67` | Corrected subdirectory path in Security job |
+| Mailpit SMTP probe | — | Python 3 `smtplib` replacement | Replaced `sendmail` dependency in Containers job |
+
+The corrected workflow has not been executed remotely yet. The next PR push will trigger a re-run.
+
 ## Gate verdict
 
 All mandatory pre-scaffolding compatibility rows have a supported exact
