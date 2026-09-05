@@ -69,13 +69,9 @@ jobs:
         working-directory: backend
         run: ./gradlew clean test integrationTest verifyResolvedJUnit6
 
-      - name: Generate dependency locks
-        working-directory: backend
-        run: ./gradlew dependencies --write-locks
-
       - name: Verify dependency locks
         working-directory: backend
-        run: ./gradlew dependencies --verify-locks
+        run: ./gradlew dependencies
 
   web:
     name: Web

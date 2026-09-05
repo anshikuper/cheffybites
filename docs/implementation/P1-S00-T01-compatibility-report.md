@@ -379,6 +379,44 @@ All mandatory pre-scaffolding compatibility rows have a supported exact
 selection and a passing isolated proof. Repository scaffolding may proceed
 without an architecture change.
 
+## GitHub Actions PR run — 33979919846
+
+Run **33979919846** executed on branch `feature/p1-foundation-ci-reconcile`.
+
+### Passing jobs
+
+- Contract — PASS
+- Security — PASS
+- Containers — PASS
+- Diff Check — PASS
+
+### Backend
+
+Setup, PostgreSQL readiness, backend tests, and `verifyResolvedJUnit6` all
+passed. The final Backend failure was only the invalid Gradle
+`--verify-locks` command. Corrected CI uses normal dependency resolution with
+the committed lock state and does not rewrite locks.
+
+The corrected dependency-lock step is:
+
+```text
+./gradlew dependencies
+```
+
+### Web
+
+pnpm setup, dependency installation, and lint passed. Type-check failed in the
+clean checkout because Next-generated `.next/types` files were absent.
+Customer-web type-check now runs:
+
+```text
+next typegen && tsc --noEmit
+```
+
+### Current reconciliation status
+
+**CORRECTION PENDING REMOTE RE-RUN**
+
 **Final T01 checkpoint: PENDING REMOTE CI** — Local verification passes, but T01 is not complete until the corrected GitHub Actions PR run passes.
 bounded scope have been executed and the results recorded above. The
 integration test source set is correctly placed, the CI workflow uses immutable

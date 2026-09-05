@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src e2e *.ts *.mjs --max-warnings 0 --no-warn-ignored",
-    "type-check": "tsc --noEmit",
+    "type-check": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test"
