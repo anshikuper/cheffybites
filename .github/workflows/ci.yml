@@ -107,6 +107,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Install Playwright Chromium
+        run: pnpm --filter @cheffybites/customer-web exec playwright install --with-deps chromium
+
       - name: E2E test
         run: pnpm test:e2e
 

@@ -422,3 +422,33 @@ bounded scope have been executed and the results recorded above. The
 integration test source set is correctly placed, the CI workflow uses immutable
 action SHAs, the Gradle dependency lock file exists, and the compatibility
 report is finalized with actual command outcomes.
+
+## GitHub Actions PR run — 33980525427
+
+Run **33980525427** executed on branch `feature/p1-foundation-ci-reconcile`.
+
+### Passing jobs
+
+- Backend — PASS
+- Containers — PASS
+- Security — PASS
+- Contract — PASS
+- Diff Check — PASS
+
+### Web
+
+Install, lint, type-check, tests, and build all passed. E2E reached Playwright
+successfully; the protected `/app/operator` and `/app/chef` tests passed. The
+public-shell browser test failed only because Chromium had not been installed
+on the clean runner.
+
+CI now explicitly installs the Playwright Chromium browser and Linux
+dependencies before E2E:
+
+```text
+pnpm --filter @cheffybites/customer-web exec playwright install --with-deps chromium
+```
+
+### Current reconciliation status
+
+**CORRECTION PENDING REMOTE RE-RUN**
