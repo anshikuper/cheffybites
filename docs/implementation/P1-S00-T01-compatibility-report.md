@@ -101,9 +101,9 @@ selected and passing baseline for `packages/api-client`.
 | `actions/checkout` | `v5.0.0` | `08c6903cd8c0fde910a37f88322edcfb5dd907a8` | Tag resolved independently; PASS |
 | `actions/setup-java` | `v5.0.0` | `dded0888837ed1f317902acf8a20df0ad188d165` | Tag resolved independently; PASS |
 | `actions/setup-node` | `v5.0.0` | `a0853c24544627f65ddf259abe73b1d18a591444` | Tag resolved independently; PASS |
-| `pnpm/action-setup` | `v4.1.0` | `7088e561eb65bb68695d245aa206f005ef30921d` | Tag resolved independently; PASS |
+| `pnpm/action-setup` | `v6.0.10` | `0977fd99725f1db4007ccb2928dbb4e90d06cc86` | Package-manager field is authoritative; correction pending remote re-run |
 | `google/osv-scanner-action` | `v2.5.1` | `6e4298ebc4db23e847df9b2e2de2939d6f066c67` | Tag resolved independently; pnpm lock scan passed |
-| `gitleaks/gitleaks-action` | `v2.3.9` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | Tag resolved independently; PASS |
+| `gitleaks/gitleaks-action` | `v3.0.0` | `e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e` | Correction pending remote re-run |
 | Gitleaks CLI | `8.30.1` | Official release checksum verified | Clean Git-history scan passed |
 | OSV-Scanner CLI | `2.5.1` | Darwin arm64 SHA-256 `75c44d6332f892a1e56286f4105a98ed751ae28d215ca0a8b65cc00d84103054` | pnpm lock scan found no issues |
 
@@ -292,10 +292,10 @@ passed (7 files). This is not OpenAPI generator nondeterminism.
 - T01 temporary request-level fail-closed boundary uses Next.js proxy
   before S01 Auth0 implementation
 
-## First GitHub Actions PR run (2026-09-05)
+## GitHub Actions PR run (2026-09-05)
 
 ### Run identifier
-GitHub Actions PR run **33969469597** on branch `feature/p1-foundation` at commit `9e63444`.
+GitHub Actions PR run **33971999943** on branch `feature/p1-foundation`.
 
 ### Diff Check
 **PASS** — `git diff --check` passed.
@@ -315,11 +315,63 @@ GitHub Actions PR run **33969469597** on branch `feature/p1-foundation` at commi
 | Tool/action | Human-readable release | Corrected immutable pin | Status |
 |---|---:|---|---|
 | `gradle/actions/setup-gradle` | `v4.3.1` | `06832c7b30a0129d7fb559bcc6e43d26f6374244` | Corrected in `.github/workflows/ci.yml` |
-| `pnpm/action-setup` | `v4.1.0` | `7088e561eb65bb68695d245aa206f005ef30921d` | Reordered before `actions/setup-node` in Web, Contract, Security |
+| `pnpm/action-setup` | `v6.0.10` | `0977fd99725f1db4007ccb2928dbb4e90d06cc86` | Package-manager field is authoritative; reordered before `actions/setup-node` in Web, Contract, Security |
 | `google/osv-scanner-action/osv-scanner-action` | `v2.5.1` | `6e4298ebc4db23e847df9b2e2de2939d6f066c67` | Corrected subdirectory path in Security job |
 | Mailpit SMTP probe | — | Python 3 `smtplib` replacement | Replaced `sendmail` dependency in Containers job |
+| `gitleaks/gitleaks-action` | `v3.0.0` | `e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e` | Removed legacy args input and added `GITHUB_TOKEN` |
 
 The corrected workflow has not been executed remotely yet. The next PR push will trigger a re-run.
+### Second GitHub Actions PR run — 33971999943
+
+The first correction commit was pushed and GitHub Actions PR run
+**33971999943** executed on `feature/p1-foundation`.
+
+**Diff Check: PASS**
+
+The first-round wiring corrections were effective:
+
+- Backend progressed past `gradle/actions/setup-gradle` setup and reached the Gradle build.
+- Security progressed past the OSV scanner action-path failure.
+- Containers progressed past the missing `sendmail` failure.
+- Web and Contract progressed to `pnpm/action-setup`.
+
+The run then exposed the following clean-run issues:
+
+| Job | Failure | Root cause / correction |
+|---|---|---|
+| Backend | Dependency verification failed for additional plugin/classpath metadata artifacts | `backend/gradle/verification-metadata.xml` was regenerated using a clean temporary `GRADLE_USER_HOME` with `--write-verification-metadata sha256`. The resulting diff added 118 lines and removed 0 existing entries. |
+| Web | `Multiple versions of pnpm specified` | Removed the explicit action `version:` input and retained the integrity-pinned `packageManager` field as authoritative. |
+| Contract | Same duplicate pnpm version failure | Same correction as Web. |
+| Security | Gitleaks required `GITHUB_TOKEN`; legacy `args` input was not accepted | Upgraded to `gitleaks/gitleaks-action` v3.0.0, removed legacy `args`, and supplied `${{ secrets.GITHUB_TOKEN }}`. |
+| Containers | PostgreSQL was shutting down during extension verification | Readiness now waits for `PostgreSQL init process complete; ready for start up.` before final `pg_isready`, avoiding the temporary initialization server race. |
+
+### Clean-cache backend verification
+
+After regenerating Gradle verification metadata, the backend gate was executed from a fresh temporary Gradle user home:
+
+```text
+./gradlew clean test integrationTest verifyResolvedJUnit6
+
+BUILD SUCCESSFUL
+Configuration cache entry stored.
+backend_clean_cache_exit=0
+```
+
+This confirms the regenerated dependency-verification metadata supports a clean dependency resolution while the application runtime baseline remains JUnit Jupiter / Platform 6.0.3.
+
+### Second correction status
+
+**CORRECTION PENDING REMOTE RE-RUN**
+
+The current second-round corrections include:
+
+- `pnpm/action-setup` v6.0.10 at `0977fd99725f1db4007ccb2928dbb4e90d06cc86`
+- `gitleaks/gitleaks-action` v3.0.0 at `e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e`
+- PostgreSQL final-server readiness gate
+- backend CI gate aligned to `clean test integrationTest verifyResolvedJUnit6`
+- regenerated Gradle dependency-verification metadata
+
+Remote CI has not yet validated this second correction set.
 
 ## Gate verdict
 
@@ -327,7 +379,7 @@ All mandatory pre-scaffolding compatibility rows have a supported exact
 selection and a passing isolated proof. Repository scaffolding may proceed
 without an architecture change.
 
-**Final T01 checkpoint: PASSED** — All required verification commands for the
+**Final T01 checkpoint: PENDING REMOTE CI** — Local verification passes, but T01 is not complete until the corrected GitHub Actions PR run passes.
 bounded scope have been executed and the results recorded above. The
 integration test source set is correctly placed, the CI workflow uses immutable
 action SHAs, the Gradle dependency lock file exists, and the compatibility
