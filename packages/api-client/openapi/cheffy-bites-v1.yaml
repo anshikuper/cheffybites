@@ -1,0 +1,92 @@
+openapi: 3.0.3
+info:
+  title: Cheffy Bites API
+  version: 0.0.0
+  description: Checkpoint-1 contract baseline; business operations are introduced by later slices.
+  license:
+    name: Proprietary
+    url: https://www.cheffybites.com/terms
+servers:
+  - url: /api/v1
+paths: {}
+components:
+  securitySchemes:
+    oidcBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    AcceptLanguage:
+      name: Accept-Language
+      in: header
+      required: false
+      schema:
+        type: string
+        enum: [en-CA, fr-CA]
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+  headers:
+    CorrelationId:
+      description: Safe request correlation identifier.
+      schema:
+        type: string
+    ETag:
+      description: Current resource representation version.
+      schema:
+        type: string
+  schemas:
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        traceId:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    Locale:
+      type: string
+      enum: [en-CA, fr-CA]
+    Instant:
+      type: string
+      format: date-time
+      pattern: "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+      example: "2026-08-27T15:00:00Z"
+    CursorPage:
+      type: object
+      additionalProperties: false
+      properties:
+        nextCursor:
+          type: string
+          nullable: true

@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: ${CHEFFY_DB_URL:jdbc:postgresql://localhost:${CHEFFY_DB_PORT:5432}/${CHEFFY_DB_NAME:cheffybites}}
+  mail:
+    host: ${CHEFFY_MAILPIT_HOST:localhost}
+    port: ${CHEFFY_MAILPIT_SMTP_PORT:1025}

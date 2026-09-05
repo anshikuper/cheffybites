@@ -1,0 +1,7 @@
+.openapi-generator-ignore
+index.ts
+models/ApiError.ts
+models/CursorPage.ts
+models/Locale.ts
+models/index.ts
+runtime.ts

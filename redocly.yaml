@@ -1,0 +1,9 @@
+apis:
+  cheffy-bites@v1:
+    root: ./packages/api-client/openapi/cheffy-bites-v1.yaml
+
+extends:
+  - recommended
+
+rules:
+  no-unused-components: off

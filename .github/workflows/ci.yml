@@ -1,0 +1,249 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  JAVA_VERSION: "21"
+  NODE_VERSION: "24.20.0"
+  PNPM_VERSION: "11.25.0"
+  GRADLE_VERSION: "9.7.1"
+  POSTGIS_IMAGE: "postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07"
+  MAILPIT_IMAGE: "axllent/mailpit:v1.31.0@sha256:c96991d9bef73594c246d89ca81411d4e916f03e76a7d2d72fa2ab5dd3c9ce24"
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Java
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@417ae3ccd767c254f566b4a1e5b39f4e13a7a0e0 # v4.3.1
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Start PostgreSQL/PostGIS
+        run: |
+          docker run --detach \
+            --name postgis \
+            --publish 5432:5432 \
+            --env POSTGRES_DB=cheffy_foundation_test \
+            --env POSTGRES_USER=cheffy \
+            --env POSTGRES_PASSWORD=cheffy \
+            ${{ env.POSTGIS_IMAGE }}
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if docker exec postgis pg_isready -U cheffy -d cheffy_foundation_test; then
+              echo "PostgreSQL is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run backend tests
+        working-directory: backend
+        run: ./gradlew clean test integrationTest --no-configuration-cache
+
+      - name: Verify JUnit 6
+        working-directory: backend
+        run: ./gradlew verifyResolvedJUnit6 --no-configuration-cache
+
+      - name: Generate dependency locks
+        working-directory: backend
+        run: ./gradlew dependencies --write-locks
+
+      - name: Verify dependency locks
+        working-directory: backend
+        run: ./gradlew dependencies --verify-locks
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: E2E test
+        run: pnpm test:e2e
+
+  contract:
+    name: Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate OpenAPI
+        run: pnpm openapi:validate
+
+      - name: Generate API client
+        run: pnpm api-client:generate
+
+      - name: Check API client drift
+        run: pnpm api-client:drift
+
+  containers:
+    name: Containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Start PostgreSQL/PostGIS
+        run: |
+          docker run --detach \
+            --name postgis \
+            --publish 5432:5432 \
+            --env POSTGRES_DB=cheffy_foundation_test \
+            --env POSTGRES_USER=cheffy \
+            --env POSTGRES_PASSWORD=cheffy \
+            ${{ env.POSTGIS_IMAGE }}
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if docker exec postgis pg_isready -U cheffy -d cheffy_foundation_test; then
+              echo "PostgreSQL is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Verify PostGIS extensions
+        run: |
+          docker exec postgis psql -U cheffy -d cheffy_foundation_test -c "CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS btree_gist;"
+          docker exec postgis psql -U cheffy -d cheffy_foundation_test -c "SELECT postgis_lib_version(), (SELECT extversion FROM pg_extension WHERE extname = 'btree_gist');"
+
+      - name: Start Mailpit
+        run: |
+          docker run --detach \
+            --name mailpit \
+            --publish 1025:1025 \
+            --publish 8025:8025 \
+            ${{ env.MAILPIT_IMAGE }}
+
+      - name: Wait for Mailpit
+        run: |
+          for i in {1..15}; do
+            if curl -sf http://localhost:8025/api/v1/health; then
+              echo "Mailpit is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Verify Mailpit SMTP
+        run: |
+          echo "Subject: Test" | sendmail -S localhost:1025 -f from@example.com to@example.com
+          sleep 2
+          curl -sf http://localhost:8025/api/v1/messages | jq -e '.messages | length > 0'
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        with:
+          args: --verbose --redact
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: OSV Scanner
+        uses: google/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+        with:
+          scan-args: --lockfile=pnpm-lock.yaml
+
+  diff-check:
+    name: Diff Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Git diff check
+        run: git diff --check
