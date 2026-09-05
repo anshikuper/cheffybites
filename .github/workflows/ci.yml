@@ -13,7 +13,6 @@ permissions:
 env:
   JAVA_VERSION: "21"
   NODE_VERSION: "24.20.0"
-  PNPM_VERSION: "11.25.0"
   GRADLE_VERSION: "9.7.1"
   POSTGIS_IMAGE: "postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07"
   MAILPIT_IMAGE: "axllent/mailpit:v1.31.0@sha256:c96991d9bef73594c246d89ca81411d4e916f03e76a7d2d72fa2ab5dd3c9ce24"
@@ -52,6 +51,13 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           for i in {1..30}; do
+            if docker logs postgis 2>&1 | grep -q "PostgreSQL init process complete; ready for start up."; then
+              break
+            fi
+            sleep 2
+          done
+
+          for i in {1..30}; do
             if docker exec postgis pg_isready -U cheffy -d cheffy_foundation_test; then
               echo "PostgreSQL is ready"
               break
@@ -61,11 +67,7 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
-        run: ./gradlew clean test integrationTest --no-configuration-cache
-
-      - name: Verify JUnit 6
-        working-directory: backend
-        run: ./gradlew verifyResolvedJUnit6 --no-configuration-cache
+        run: ./gradlew clean test integrationTest verifyResolvedJUnit6
 
       - name: Generate dependency locks
         working-directory: backend
@@ -84,9 +86,8 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
-          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
@@ -122,9 +123,8 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
-          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
@@ -165,6 +165,13 @@ jobs:
 
       - name: Wait for PostgreSQL
         run: |
+          for i in {1..30}; do
+            if docker logs postgis 2>&1 | grep -q "PostgreSQL init process complete; ready for start up."; then
+              break
+            fi
+            sleep 2
+          done
+
           for i in {1..30}; do
             if docker exec postgis pg_isready -U cheffy -d cheffy_foundation_test; then
               echo "PostgreSQL is ready"
@@ -228,14 +235,13 @@ jobs:
           fetch-depth: 0
 
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        with:
-          args: --verbose --redact
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
-          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
